@@ -28,8 +28,13 @@ Simulated traffic first, so every rule is tested against labelled attack and ben
 Needs Python 3.9+ and nothing else (stdlib only so far).
 
 ```bash
-# run the tests
+# run the tests (stdlib only)
 python3 -m unittest discover -s tests -t .
+
+# or with pytest, in a local virtualenv (.venv/ is git-ignored)
+python3 -m venv .venv
+.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest
 
 # generate a labelled log: sim.log + sim.log.labels.json (ground truth per scenario)
 python3 -m siftlog.simulator --seed 1234 --out sim.log
