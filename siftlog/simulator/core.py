@@ -90,6 +90,20 @@ class ScenarioLabel:
             "note": self.note,
         }
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> "ScenarioLabel":
+        return cls(
+            id=str(data["id"]),
+            kind=str(data["kind"]),
+            is_attack=bool(data["is_attack"]),
+            expect_alert=bool(data["expect_alert"]),
+            group_key=None if data.get("group_key") is None else str(data["group_key"]),
+            rule_hint=None if data.get("rule_hint") is None else str(data["rule_hint"]),
+            start=datetime.fromisoformat(str(data["start"])),
+            end=datetime.fromisoformat(str(data["end"])),
+            note=str(data.get("note", "")),
+        )
+
 
 @dataclass
 class SimulatedLog:
@@ -399,3 +413,10 @@ def write_files(sim: SimulatedLog, log_path: str, labels_path: str) -> None:
     with open(labels_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
         fh.write("\n")
+
+
+def load_labels(labels_path: str) -> List[ScenarioLabel]:
+    """Read the scenario labels back from a file written by write_files()."""
+    with open(labels_path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return [ScenarioLabel.from_dict(item) for item in payload["scenarios"]]

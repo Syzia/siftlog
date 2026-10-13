@@ -1,0 +1,16 @@
+id: ssh-brute-force
+title: SSH brute force
+description: >
+  One source address failing authentication many times in a short window.
+  Counts attempts, not log lines, so collapsed "message repeated N times" lines
+  are weighted correctly.
+severity: high
+type: event_count
+filter:
+  event_type: auth_failure
+  source: sshd
+group_by: [src_ip]
+timespan: 5m
+condition:
+  gte: 10
+mitre: [T1110.001]

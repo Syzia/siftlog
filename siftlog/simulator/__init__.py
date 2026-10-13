@@ -5,6 +5,7 @@ from siftlog.simulator.core import (
     HOST,
     ScenarioLabel,
     SimulatedLog,
+    load_labels,
     simulate,
     write_files,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "HOST",
     "ScenarioLabel",
     "SimulatedLog",
+    "load_labels",
     "simulate",
     "write_files",
 ]
