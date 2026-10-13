@@ -42,6 +42,13 @@ Working name: **Siftlog** (rename freely; avoid anything that sounds like an exi
 - Hands raw lines to the normalizer. No parsing logic here.
 - Ingest is **idempotent**: re-reading a file must not double-count events (see event ids below).
 
+As built (stage 2):
+- **Stream identity** is a hash of the file's *first line*, not its path. Rotation renames `auth.log` to `auth.log.1` and gzips it later; the same events must not be counted again. A first line carries a timestamp, so it differs between rotations but stays stable while the file grows. Pass an explicit `source_id` when two streams could share a first line.
+- `.gz` files are read transparently, and offsets are *uncompressed* offsets, so a compressed copy yields the same event ids.
+- A **final line with no trailing newline is left alone** (and reported): it may still be being written, and ids are offset-based, so storing a truncated version would be permanent. The next ingest picks it up once complete.
+- **Lines are capped at 64 KiB.** Logs carry attacker-controlled bytes; an overlong line is truncated (so it dead-letters) and the rest is skipped without being held in memory, with later offsets unaffected.
+- Writes commit per chunk, so an interrupted ingest is simply run again.
+
 ### 3. Normalizer (parsers)
 Converts every log format into one common event schema. One parser per source, registered by name.
 
@@ -60,6 +67,8 @@ class Event:
     geo: dict | None        # country/lat/lon, filled by enrichment
     extra: dict             # source-specific: http method/path/status/user_agent, ssh auth method, port
     raw: str                # original line, for audit and debugging
+    source_id: str          # which stream the line came from (see "Stream identity")
+    offset: int             # byte offset of the line in that stream
 ```
 
 Things that will bite you in the parsers:
@@ -77,6 +86,16 @@ GeoIP lookup via the offline MaxMind GeoLite2 database (no API calls, no rate li
 
 ### 5. Event Store
 SQLite with indexes on `(src_ip, timestamp)` and `(username, timestamp)`, since nearly every rule is a windowed query on those. Move to Postgres only if write volume or concurrency becomes a real problem.
+
+As built (stage 2):
+- `events.id` is `UNIQUE` and inserts are `OR IGNORE`, so writes are idempotent.
+- Timestamps are **integer microseconds since the epoch (UTC)**: exact, and range queries are integer comparisons. `since` is inclusive and `until` exclusive, so adjacent windows never overlap.
+- Results are ordered by `(timestamp, source_id, byte_offset)`: time first, then file order. Syslog has one-second resolution, so ties are common and "failures then success" rules need a meaningful order within a second.
+- A third index on `(timestamp)` serves replay mode, which scans a time range regardless of who. There is deliberately no `(event_type, timestamp)` index yet; add it with a schema-version bump when a rule's plan shows it is needed.
+- `PRAGMA user_version` holds the schema version. A newer or unknown database is refused rather than guessed at.
+- Every query is parameterised. Usernames are attacker-controlled log content, so values never reach the SQL text.
+- `count(weighted=True)` sums `repeat_count`; rules that threshold on attempts must use it, because one row can stand for several events.
+- Dead letters live in their own table, keyed by `(source_id, byte_offset)`, so they are idempotent too.
 
 ### 6. Detection Engine
 Rule types are named after Sigma's correlation types (`event_count`, `value_count`, `temporal`), so the stage 9 Sigma import is mostly field mapping rather than a redesign. `impossible_travel` is a custom extension.

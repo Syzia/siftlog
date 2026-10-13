@@ -1,0 +1,35 @@
+Oct 13 06:25:03 web01 sshd[2301]: Server listening on 0.0.0.0 port 22.
+Oct 13 06:25:03 web01 sshd[2301]: Server listening on :: port 22.
+Oct 13 06:31:44 web01 sshd[2350]: Invalid user admin from 203.0.113.17 port 41022
+Oct 13 06:31:46 web01 sshd[2350]: pam_unix(sshd:auth): check pass; user unknown
+Oct 13 06:31:46 web01 sshd[2350]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.17
+Oct 13 06:31:48 web01 sshd[2350]: Failed password for invalid user admin from 203.0.113.17 port 41022 ssh2
+Oct 13 06:31:51 web01 sshd[2350]: Failed password for invalid user admin from 203.0.113.17 port 41022 ssh2
+Oct 13 06:31:51 web01 sshd[2350]: Connection closed by invalid user admin 203.0.113.17 port 41022 [preauth]
+Oct 13 06:33:02 web01 sshd[2361]: Failed password for root from 203.0.113.17 port 41310 ssh2
+Oct 13 06:33:04 web01 sshd[2361]: message repeated 5 times: [ Failed password for root from 203.0.113.17 port 41310 ssh2]
+Oct 13 06:33:05 web01 sshd[2361]: PAM 5 more authentication failures; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.17  user=root
+Oct 13 06:33:05 web01 sshd[2361]: Disconnecting authenticating user root 203.0.113.17 port 41310: Too many authentication failures [preauth]
+Oct 13 06:40:12 web01 sshd[2377]: Invalid user admin from 192.0.2.9 port 1 from 203.0.113.99 port 52000
+Oct 13 06:40:14 web01 sshd[2377]: Failed password for invalid user admin from 192.0.2.9 port 1 from 203.0.113.99 port 52000 ssh2
+Oct 13 07:02:19 web01 sshd[2410]: Accepted publickey for deploy from 198.51.100.12 port 50122 ssh2: RSA SHA256:Zk3qU8ylEoPfJ1h0m2uTDaSd1uH6e5Qy8Xw0pB2N9aI
+Oct 13 07:02:19 web01 sshd[2410]: pam_unix(sshd:session): session opened for user deploy(uid=1001) by (uid=0)
+Oct 13 07:45:51 web01 sshd[2410]: Disconnected from user deploy 198.51.100.12 port 50122
+Oct 13 07:45:51 web01 sshd[2410]: pam_unix(sshd:session): session closed for user deploy
+Oct 13 08:10:07 web01 sshd[2455]: Accepted password for alice from 198.51.100.40 port 38812 ssh2
+Oct 13 08:10:07 web01 sshd[2455]: pam_unix(sshd:session): session opened for user alice(uid=1000) by (uid=0)
+Oct 13 08:55:30 web01 sshd[2490]: Failed publickey for nagios from 198.51.100.99 port 47000 ssh2: RSA SHA256:aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7bC9d
+Oct 13 08:55:30 web01 sshd[2490]: Connection closed by authenticating user nagios 198.51.100.99 port 47000 [preauth]
+Oct 13 09:14:00 web01 sshd[2512]: Did not receive identification string from 203.0.113.140 port 60112
+Oct 13 09:20:41 web01 sshd[2530]: Unable to negotiate with 203.0.113.141 port 44218: no matching key exchange method found. Their offer: diffie-hellman-group1-sha1 [preauth]
+Oct 13 09:31:15 web01 sshd[2561]: Bad protocol version identification 'GET / HTTP/1.1' from 203.0.113.142 port 33100
+Oct 13 09:31:15 web01 sshd[2561]: Connection closed by 203.0.113.142 port 33100 [preauth]
+Oct 13 10:02:09 web01 sshd[2601]: Received disconnect from 203.0.113.143 port 51200:11: Bye Bye [preauth]
+Oct 13 10:02:09 web01 sshd[2601]: Disconnected from authenticating user root 203.0.113.143 port 51200 [preauth]
+Oct 13 10:15:44 web01 sshd[2640]: Failed password for alice from 192.0.2.10 port 40001 ssh2
+Oct 13 10:15:49 web01 sshd[2640]: Accepted password for alice from 192.0.2.10 port 40001 ssh2
+Oct 13 10:15:49 web01 CRON[2650]: pam_unix(cron:session): session opened for user root(uid=0) by (uid=0)
+Oct 13 10:20:00 web01 sudo:    alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/apt update
+Oct 13 11:05:21 web01 sshd-session[3011]: Failed password for invalid user postgres from 203.0.113.150 port 42110 ssh2
+Oct 13 11:05:21 web01 sshd-session[3011]: Connection closed by invalid user postgres 203.0.113.150 port 42110 [preauth]
+Oct 13 11:30:02 web01 sshd[3050]: Failed password for root from 2001:db8::1a2b port 55555 ssh2

@@ -16,10 +16,15 @@ dist/
 # Never commit real data: logs, databases, GeoIP databases
 *.log
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 *.sqlite
 *.sqlite3
 *.mmdb
 data/
+honeypot-logs/
+cowrie.json*
 !tests/fixtures/*.log
 
 # Dashboard
