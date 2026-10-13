@@ -34,6 +34,11 @@ class Event:
     geo: Optional[Dict[str, Any]] = None  # filled by enrichment (stage 4)
     # Source-specific fields: ssh auth method, port, pid, http path/status, ...
     extra: Dict[str, Any] = field(default_factory=dict)
+    # Provenance: which stream and byte offset the line came from. Together they
+    # produce `id`, give a file-order tie-break for events sharing a timestamp
+    # (syslog only has one-second resolution), and let an analyst find the line.
+    source_id: str = ""
+    offset: int = 0
 
     def __post_init__(self) -> None:
         if self.timestamp.tzinfo is None or self.timestamp.utcoffset() != timedelta(0):

@@ -186,6 +186,8 @@ class SshdParser:
                 raw=raw,
                 count=count,
                 extra=extra,
+                source_id=source_id,
+                offset=offset,
             )
             return ParseResult(events=(event,))
 
