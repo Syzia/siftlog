@@ -71,7 +71,7 @@ To reproduce the results tables: `.venv/bin/python -m siftlog.evaluate --publish
 
 ## The API
 
-Interactive documentation is at `http://127.0.0.1:8000/docs` once the server is running. Click **Authorize** and paste the token.
+Once the server is running, open `http://127.0.0.1:8000` in a browser. It redirects to the interactive documentation at `/docs`. Click **Authorize** and paste the token.
 
 | Method | Path | What it does |
 |--------|------|--------------|

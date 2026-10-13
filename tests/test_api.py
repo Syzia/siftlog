@@ -71,6 +71,12 @@ class AuthTests(ApiTestCase):
         response = self.client.get("/health")
         self.assertEqual((response.status_code, response.json()), (200, {"status": "ok"}))
 
+    def test_the_bare_address_leads_to_the_documentation(self):
+        response = self.client.get("/", follow_redirects=False)
+        self.assertEqual((response.status_code, response.headers["location"]), (307, "/docs"))
+        self.assertEqual(self.client.get("/").status_code, 200)  # following it reaches the docs page
+        self.assertIn("swagger", self.client.get("/docs").text.lower())
+
     def test_every_other_route_refuses_without_the_token(self):
         attempts = {
             "no header": {},

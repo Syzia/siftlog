@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -202,6 +203,11 @@ def create_app(db_path: str, rules: Sequence[Rule], token: str) -> FastAPI:
     @app.get("/health", summary="Liveness check (no token needed)")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/", include_in_schema=False)
+    def root() -> RedirectResponse:
+        # Someone opening the bare address in a browser should land somewhere useful, not on a 404.
+        return RedirectResponse("/docs")
 
     api = APIRouter(dependencies=[Depends(authorised)])
 
