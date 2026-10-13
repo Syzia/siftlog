@@ -1,44 +1,46 @@
 # Siftlog
 
-A small SIEM: ingest auth logs, normalize them into one event schema, and fire alerts from YAML detection rules (brute force, password spraying, credential stuffing, impossible travel).
+A small SIEM for SSH auth logs. It parses logs into one event schema, stores them in SQLite, runs detection rules written in YAML, and serves the resulting alerts, with their evidence and an analyst workflow, over an HTTP API.
 
-> **Status:** detection works end to end on simulated data: parse, store, locate, run five rules, and score the alerts against ground truth. A honeypot is collecting real data for later. There is no API or dashboard yet.
+> **Status: MVP.** The whole path works on simulated data: parse, store, locate, detect, score against ground truth, and serve. A honeypot is collecting real data for a later stage. There is no dashboard yet.
 
-## Design in one paragraph
+```
+ log file -> parser -> SQLite event store -> location enrichment -> rule engine -> alert store -> HTTP API
+                |                                                       ^
+           dead letters                                          rules/*.yml
+```
 
-Simulated traffic first, so every rule is tested against labelled attack and benign scenarios. SQLite and a single FastAPI process rather than Kafka and Elasticsearch. Detections are YAML data, not code, and the rule types follow Sigma's correlation types. The full design is in [docs/architecture.md](docs/architecture.md).
+The full design, including what changed while building it, is in [docs/architecture.md](docs/architecture.md). Findings, mistakes and the first real attack caught by the honeypot are in [docs/devlog.md](docs/devlog.md).
 
-## Results so far
+## Results
 
-Across 50 independent simulations, the five rules raise **every alert they should, with no duplicates**. They are also wrong in two known, measured ways:
+Measured over 50 independent simulations, each run through the real pipeline and scored against per-line ground truth:
+
+| Rule | Expected | Detected | Alerts | False | Duplicate | Precision | Recall |
+|------|---------:|---------:|-------:|------:|----------:|----------:|-------:|
+| `ssh-brute-force` | 100 | 100 | 100 | 0 | 0 | 100.0% | 100.0% |
+| `ssh-credential-stuffing` | 50 | 50 | 50 | 0 | 0 | 100.0% | 100.0% |
+| `ssh-impossible-travel` | 50 | 50 | 100 | 50 | 0 | 50.0% | 100.0% |
+| `ssh-password-spray` | 50 | 50 | 50 | 0 | 0 | 100.0% | 100.0% |
+| `ssh-success-after-failures` | 50 | 50 | 50 | 0 | 0 | 100.0% | 100.0% |
+| **All** | 300 | 300 | 350 | 50 | 0 | 85.7% | 100.0% |
+
+Attack scenarios: 300, detected 250 (83.3% of all attacks). Documented misses (attacks not expected to alert): 50.
+
+The five rules raise **every alert they should, with no duplicates**. They are also wrong in two known, measured ways:
 
 - **Precision is 85.7%.** Every false alert is the impossible-travel rule flagging a real user on a VPN. No speed threshold fixes it, because the VPN user and a thief both appear to teleport.
-- **83.3% of all simulated attacks are detected.** The low-and-slow attack stays under every threshold.
+- **83.3% of all simulated attacks are detected.** A low-and-slow attack stays under every threshold.
 
-These are simulated-data numbers and the thresholds were tuned against the simulator, so treat them as a correctness check, not a performance claim. The definitions, the gaps, and the sweeps that show where each rule breaks are in [docs/results.md](docs/results.md). A test regenerates that page's tables and fails if they drift.
+These are simulated-data numbers and the thresholds were tuned against the simulator, so read them as a correctness check, not a performance claim. Definitions, known gaps, and sweeps showing where each rule breaks are in [docs/results.md](docs/results.md). A test regenerates these tables and fails if they drift from the code.
 
-## Build stages
+## Quick start
 
-| Stage | Deliverable | Status |
-|-------|-------------|--------|
-| 0 | Cowrie honeypot on an isolated VPS ([runbook](docs/honeypot.md)) | deployed 2026-10-13 |
-| 1 | Labelled log simulator + SSH parser + event schema | done |
-| 2 | SQLite event store + idempotent batch ingest | done |
-| 3 | Replay-mode engine, `event_count` and `value_count` rules | done |
-| 4 | `temporal_ordered` + `impossible_travel` rules, GeoIP enrichment | done |
-| 5 | FastAPI + episode-based alerts (**MVP**) | not started |
-| 6 | Streaming mode + tail ingestor | not started |
-| 7 | React dashboard (optional) | not started |
-| 8 | Real data + web log parser | not started |
-| 9 | Sigma rule import (stretch) | not started |
-
-## Try it
-
-Needs Python 3.9+ and PyYAML. A local virtualenv keeps it tidy (`.venv/` is git-ignored):
+Needs Python 3.9 or newer. A local virtualenv keeps it tidy (`.venv/` is git-ignored):
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install PyYAML pytest
+.venv/bin/python -m pip install PyYAML fastapi uvicorn httpx pytest
 .venv/bin/python -m pytest
 ```
 
@@ -56,16 +58,48 @@ Then the whole pipeline, one step at a time:
 #    the simulator's fake table; real logs use --geoip GeoLite2-City.mmdb instead.
 .venv/bin/python -m siftlog.enrich --db siftlog.db --simulated
 
-# 4. run the rules over the stored events and score the alerts against ground truth
-.venv/bin/python -m siftlog.engine --db siftlog.db --rules rules --labels sim.log.labels.json --log sim.log
+# 4. run the rules, score the alerts against ground truth, and save them for the API
+.venv/bin/python -m siftlog.engine --db siftlog.db --rules rules --labels sim.log.labels.json --log sim.log --save
 
-# 5. measure the rules across 50 simulations, with sweeps of each rule's main setting
-.venv/bin/python -m siftlog.evaluate --published
+# 5. serve them. Prints an API token, then listens on http://127.0.0.1:8000
+.venv/bin/python -m siftlog.api --db siftlog.db --rules rules
 ```
 
 `--year` is required because classic syslog timestamps carry no year, and guessing would silently corrupt every timestamp.
 
-The simulator emits six attack scenarios and five benign ones (typos, a NAT'd office, legitimate travel, a monitoring probe, a VPN user). Two are there to keep the results honest: `low_and_slow` is an attack the rules are known to miss, and `vpn_hop` is a benign user they are known to flag.
+To reproduce the results tables: `.venv/bin/python -m siftlog.evaluate --published`.
+
+## The API
+
+Once the server is running, open `http://127.0.0.1:8000` in a browser. It redirects to the interactive documentation at `/docs`. Click **Authorize** and paste the token.
+
+| Method | Path | What it does |
+|--------|------|--------------|
+| `GET` | `/health` | Liveness check. The only route that needs no token. |
+| `GET` | `/alerts` | List alerts, newest activity first. Filter by `status`, `severity`, `rule_id`, `group_key`, `since`, `until`; page with `limit` and `offset`. |
+| `GET` | `/alerts/{id}` | One alert with its evidence events and status history. |
+| `PATCH` | `/alerts/{id}` | Record a decision: `{"status": "open" \| "ack" \| "closed", "note": "..."}`. |
+| `GET` | `/events` | Search events by `src_ip`, `username`, `event_type` and time. |
+| `GET` | `/stats` | Counts for a dashboard, including the busiest failing sources. |
+| `GET` | `/rules` | Loaded rules and how many alerts each has raised. |
+
+Every request except `/health` must send the token:
+
+```bash
+export SIFTLOG_API_TOKEN="a-long-random-value-you-chose"
+.venv/bin/python -m siftlog.api --db siftlog.db --rules rules
+```
+
+```bash
+curl -H "Authorization: Bearer $SIFTLOG_API_TOKEN" "http://127.0.0.1:8000/alerts?status=open"
+```
+
+If `SIFTLOG_API_TOKEN` is not set, a random token is generated for that run and printed once.
+
+Two behaviours worth knowing:
+
+- **Re-running the engine never erases a decision.** Detections are recomputed on each `--save`; statuses and notes are kept.
+- **Closing means handled, not muted.** If a closed alert gains new activity, it is reopened automatically and the reason is recorded in its history.
 
 ## Writing a rule
 
@@ -93,27 +127,44 @@ mitre: [T1110.003]
 - **One attack is one alert.** An alert stays open while its condition holds and closes after a cooldown (default: the timespan). A later burst opens a new one.
 - **Validation is strict.** An unknown key is an error, so a typo stops the engine rather than producing a rule that never fires.
 
-## Parser behaviour worth knowing
+## Threat model
 
-Each line becomes an **event**, is **ignored** with a reason (understood, not security-relevant, or a duplicate of a line already counted), or becomes a **dead letter** (not understood, kept for inspection). Usernames are attacker-controlled, so source addresses are always taken from the end of the line, where sshd wrote them.
+**Detects:** SSH brute force, password spraying, credential stuffing, a password guess that succeeded, and logins from impossibly distant places.
 
-## Querying the store
+**Does not cover:**
 
-```python
-from datetime import datetime, timezone
-from siftlog.store import EventStore
+- Anything that is not in the logs, and attackers who tamper with logs before they are ingested.
+- Host-level malware, and attacks that never touch SSH authentication.
+- Low-and-slow attacks under the thresholds, and brute forces spread across enough addresses to stay under them. Both are measured in [docs/results.md](docs/results.md).
+- Users behind VPNs, who trip the travel rule. Location data is only as good as GeoIP.
+- Live detection. Rules run as a replay over stored events; streaming is a later stage.
 
-with EventStore("siftlog.db") as store:
-    events = store.query(
-        src_ip="203.0.113.5",
-        event_type="auth_failure",
-        since=datetime(2026, 3, 1, tzinfo=timezone.utc),  # inclusive
-        until=datetime(2026, 3, 2, tzinfo=timezone.utc),  # exclusive
-    )
-```
+**How Siftlog protects itself.** Everything in a log line is attacker-controlled, so:
 
-Results come back in time order, with ties broken by position in the source file.
+- **Parsing.** Patterns are anchored at the end of the line, so a username that looks like log syntax cannot spoof the source address. Log content is never evaluated or passed to a shell. Lines are capped at 64 KiB, invalid UTF-8 is tolerated, and lines that do not parse are kept as dead letters instead of dropped.
+- **Storage.** Every query is parameterised, and column names never come from input.
+- **Rules.** Loaded with `yaml.safe_load`, so a rule file cannot construct Python objects.
+- **Engine.** Evidence is capped per alert and idle state is dropped, so one attacker cannot grow memory without bound.
+- **API.** A bearer token on every route but `/health`, compared in constant time. It listens on this machine only by default and refuses to listen elsewhere with a generated token. Parameters are typed and bounded. Responses are JSON only.
+- **Repository.** No real logs, credentials or attack traffic. Fixtures use documentation address ranges.
+
+**Known weaknesses.** One shared token and no user accounts, so the history records the actor as `api`. No TLS: beyond this machine it needs a reverse proxy. No rate limiting. The database is a single file, and anyone who can read it can read everything. Usernames and raw lines are returned as data, so anything that displays them must escape them.
+
+## Build stages
+
+| Stage | Deliverable | Status |
+|-------|-------------|--------|
+| 0 | Cowrie honeypot on an isolated VPS ([runbook](docs/honeypot.md)) | deployed 2026-10-13 |
+| 1 | Labelled log simulator + SSH parser + event schema | done |
+| 2 | SQLite event store + idempotent batch ingest | done |
+| 3 | Replay-mode engine, `event_count` and `value_count` rules | done |
+| 4 | `temporal_ordered` + `impossible_travel` rules, GeoIP enrichment | done |
+| 5 | Alert store with analyst workflow + HTTP API (**MVP**) | done |
+| 6 | Streaming mode + tail ingestor | not started |
+| 7 | React dashboard (optional) | not started |
+| 8 | Real data + web log parser | not started |
+| 9 | Sigma rule import (stretch) | not started |
 
 ## Safety
 
-This project handles attacker-controlled input. Only run it against logs from systems you own or have permission to monitor. No real logs, credentials or attack traffic belong in this repository: fixtures are sanitized and use documentation IP ranges (RFC 5737).
+This project handles attacker-controlled input. Only run it against logs from systems you own or have permission to monitor. No real logs, credentials or attack traffic belong in this repository.

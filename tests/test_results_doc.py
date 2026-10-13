@@ -25,7 +25,10 @@ class ResultsDocTests(unittest.TestCase):
         ordered = list(rules.values())
         datasets = [simulated_dataset(seed) for seed in range(1, PUBLISHED_SEEDS + 1)]
 
-        self.assertIn(evaluate(ordered, datasets).to_markdown(), doc, STALE)
+        headline = evaluate(ordered, datasets).to_markdown()
+        self.assertIn(headline, doc, STALE)
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+            self.assertIn(headline, fh.read(), "README.md results table is out of date")
         for rule_id, values in PUBLISHED_SWEEPS:
             table = sweep_markdown(rules[rule_id], threshold_sweep(ordered, rule_id, list(values), datasets))
             self.assertIn(table, doc, f"{STALE} (sweep for {rule_id})")

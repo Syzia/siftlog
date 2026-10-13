@@ -13,7 +13,7 @@ Placeholders: `<IP>` is the server's public address, `<MY_IP>` is your current p
 ## Ground rules
 
 - **Throwaway box.** Nothing personal on it, no reused keys or passwords, nothing that can reach your other systems. Use the dedicated `~/.ssh/honeypot_ed25519` key and never enable SSH agent forwarding to it.
-- **The box will download attackers' payloads.** Cowrie records `cowrie.session.file_download` events with a `url`, `outfile` and `shasum`, which means it fetches and stores the files attackers ask for. Treat everything it stores as live malware: never open, run or `chmod +x` it, and keep it off your Mac. Watch disk usage.
+- **The box will store attackers' payloads.** Cowrie fetches the files attackers ask it to download and keeps the files they upload, recording each with a `shasum`. Treat everything in `var/lib/cowrie/downloads` as live malware: never open, run or `chmod +x` it, and keep it off your Mac. There is no size limit until you set one (step 5).
 - **Raw logs never go in the repo.** Keep them outside it (for example `~/honeypot-logs`). Fixtures are sanitized by hand.
 - **Billing is hourly and continues while stopped.** Only destroying the instance stops it.
 
@@ -152,6 +152,14 @@ cowrie init
 ```
 
 `cowrie init` writes `etc/cowrie.cfg` and the `var/` skeleton. Settings are layered, and your `etc/cowrie.cfg` only needs the keys you change. For example, telnet is off by default and is enabled with `[telnet] enabled = true`. Leave it off for the first deployment.
+
+**Cap transfer sizes before starting it.** Out of the box Cowrie puts no limit on what an attacker can upload, or make the honeypot download: the setting ships commented out. On the live box the first visitor logged in and uploaded a 30 MB file within the hour. Turn the limit on (10 MB is Cowrie's own suggested value):
+
+```bash
+sed -i 's/^#download_limit_size = 10485760/download_limit_size = 10485760/' etc/cowrie.cfg && grep -n '^download_limit_size' etc/cowrie.cfg
+```
+
+It should print the now-active line (line 87 in Cowrie 3.1.2, under `[honeypot]`). The one setting covers SFTP uploads as well as `wget`, `curl`, `tftp`, `ftpget` and `nc`. It is a per-file limit, so different payloads still add up: check `df -h /` now and then. If Cowrie is already running, apply the change with `systemctl restart cowrie` as root. **(Verified on the live box.)**
 
 Start it (from the same directory, venv active):
 
@@ -307,6 +315,12 @@ Per the Cowrie docs, every JSON event carries `eventid`, `message`, `sensor`, `t
 | `cowrie.session.file_download` | `url`, `outfile`, `shasum` |
 
 These map onto `auth_failure` and `auth_success` events. There is no Cowrie parser yet; that is the first task of stage 8.
+
+Two things the first hour of real traffic showed, which the parser and rules need to allow for:
+
+- **Almost every login succeeds.** Cowrie lets most guesses in, so this data has very few failures. Rules that count failed logins will be quiet; the signals here are successful logins from many addresses, the commands typed, and uploads.
+- **Uploads are an event of their own**, `cowrie.session.file_upload`, carrying `filename`, `outfile` and `shasum`. The first one captured was a 30 MB file named `sshd`: malware masquerading as the SSH daemon (MITRE ATT&CK T1036.005).
+- `dst_port` is 2222, not 22, because of the redirect in step 7.
 
 ## 12. Teardown
 
