@@ -15,7 +15,7 @@ from __future__ import annotations
 import ipaddress
 import re
 from datetime import datetime, timedelta, timezone, tzinfo
-from typing import Optional
+from typing import Dict, Mapping, Optional
 
 from siftlog.events import (
     AUTH_FAILURE,
@@ -127,6 +127,14 @@ class SshdParser:
         self._year = year
         self._tz = tz
         self._last_month: Optional[int] = None
+
+    def state(self) -> Dict[str, Optional[int]]:
+        """What must be saved to resume parsing mid-stream: the year being assumed."""
+        return {"year": self._year, "last_month": self._last_month}
+
+    def restore(self, state: Mapping[str, Optional[int]]) -> None:
+        self._year = int(state["year"])  # type: ignore[arg-type]
+        self._last_month = state.get("last_month")
 
     def parse_line(self, line: str, source_id: str, offset: int) -> ParseResult:
         raw = line.rstrip("\r\n")

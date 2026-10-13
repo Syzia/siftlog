@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Deque, Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
@@ -52,6 +52,10 @@ from siftlog.events import Event
 # Evidence ids kept per alert. Counts stay exact past this; only the id list is capped,
 # so an attacker cannot grow one alert without bound.
 MAX_EVIDENCE = 1000
+# Groups tracked per rule. Group keys are attacker-controlled (an address, a username),
+# so without a ceiling one scanner cycling random usernames could grow state without
+# bound. Past the ceiling the least recently active group is forgotten.
+DEFAULT_MAX_GROUPS = 200_000
 _SWEEP_EVERY = 20_000
 
 
@@ -115,13 +119,45 @@ def _alert(rule: Rule, key: str, episode: _Episode) -> Alert:
 class _Evaluator:
     """Per-rule state. Subclasses keep one small record per active group."""
 
-    def __init__(self, rule: Rule, max_evidence: int) -> None:
+    def __init__(self, rule: Rule, max_evidence: int, max_groups: int = DEFAULT_MAX_GROUPS) -> None:
         self.rule = rule
         self.max_evidence = max_evidence
-        self.groups: Dict[str, Any] = {}
+        self.max_groups = max_groups
+        self.groups: "OrderedDict[str, Any]" = OrderedDict()  # least recently active first
+        self.touched: Dict[str, None] = {}  # groups whose open alert changed since collect()
+        self.evicted = 0  # groups forgotten early because of max_groups
 
     def feed(self, event: Event, alerts: List[Alert]) -> None:
         raise NotImplementedError
+
+    def _group(self, key: str, make: Any, now: datetime, alerts: List[Alert]) -> Any:
+        """The state for ``key``, created if new, and marked as the most recently active."""
+        group = self.groups.get(key)
+        if group is not None:
+            self.groups.move_to_end(key)
+            return group
+        group = self.groups[key] = make(now)
+        if len(self.groups) > self.max_groups:
+            old_key, old = self.groups.popitem(last=False)
+            self.evicted += 1
+            if old.episode is not None:
+                alerts.append(_alert(self.rule, old_key, old.episode))
+        return group
+
+    def collect(self) -> List[Alert]:
+        """Snapshots of the open alerts that changed since the last call.
+
+        Replay only reports an alert when its episode ends. Streaming must not
+        wait that long, so it reads open alerts as they stand. The id is fixed
+        once an episode opens, so successive snapshots update one stored alert.
+        """
+        snapshots = []
+        for key in self.touched:
+            group = self.groups.get(key)
+            if group is not None and group.episode is not None:
+                snapshots.append(_alert(self.rule, key, group.episode))
+        self.touched = {}
+        return snapshots
 
     def _expire(self, key: str, group: Any, now: datetime, alerts: List[Alert]) -> Optional[_Episode]:
         """Close the group's episode if its condition has not held for the cooldown."""
@@ -184,9 +220,7 @@ class _CountEvaluator(_Evaluator):
             if value is None:
                 return
         now = event.timestamp
-        group = self.groups.get(key)
-        if group is None:
-            group = self.groups[key] = _CountGroup(now)
+        group = self._group(key, _CountGroup, now, alerts)
 
         cutoff = now - rule.timespan
         window = group.window
@@ -225,6 +259,7 @@ class _CountEvaluator(_Evaluator):
                 episode.values.add(entry.value)
         episode.max_seq = group.seq
         episode.last_seen = now
+        self.touched[key] = None
 
 
 # --- temporal_ordered ---------------------------------------------------------
@@ -258,9 +293,7 @@ class _SequenceEvaluator(_Evaluator):
         if key is None:
             return
         now = event.timestamp
-        group = self.groups.get(key)
-        if group is None:
-            group = self.groups[key] = _SeqGroup(now)
+        group = self._group(key, _SeqGroup, now, alerts)
 
         cutoff = now - rule.timespan
         window = group.window
@@ -287,6 +320,7 @@ class _SequenceEvaluator(_Evaluator):
             episode.add(entry.event_id, entry.weight, self.max_evidence)
         episode.max_seq = group.seq
         episode.last_seen = now
+        self.touched[key] = None
 
     def _complete(self, window: Iterable[_SeqEntry]) -> bool:
         """Are all steps satisfied, in order, by the events in the window?
@@ -350,9 +384,7 @@ class _TravelEvaluator(_Evaluator):
         if key is None:
             return
         now = event.timestamp
-        group = self.groups.get(key)
-        if group is None:
-            group = self.groups[key] = _TravelGroup(now)
+        group = self._group(key, _TravelGroup, now, alerts)
         episode = self._expire(key, group, now, alerts)
         if episode is None:
             group.last_evidence = None
@@ -381,28 +413,37 @@ class _TravelEvaluator(_Evaluator):
         episode.add(current.event_id, 1, self.max_evidence)
         group.last_evidence = current.event_id
         episode.last_seen = now
+        self.touched[key] = None
 
 
-def _evaluator(rule: Rule, max_evidence: int) -> _Evaluator:
+def _evaluator(rule: Rule, max_evidence: int, max_groups: int = DEFAULT_MAX_GROUPS) -> _Evaluator:
     if rule.type == TEMPORAL_ORDERED:
-        return _SequenceEvaluator(rule, max_evidence)
+        return _SequenceEvaluator(rule, max_evidence, max_groups)
     if rule.type == IMPOSSIBLE_TRAVEL:
-        return _TravelEvaluator(rule, max_evidence)
-    return _CountEvaluator(rule, max_evidence)
+        return _TravelEvaluator(rule, max_evidence, max_groups)
+    return _CountEvaluator(rule, max_evidence, max_groups)
+
+
+def _check_unique(rules: Sequence[Rule]) -> None:
+    ids = [rule.id for rule in rules]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate rule ids: {duplicates}")
 
 
 class ReplayEngine:
-    def __init__(self, rules: Sequence[Rule], max_evidence: int = MAX_EVIDENCE) -> None:
-        ids = [rule.id for rule in rules]
-        duplicates = sorted({i for i in ids if ids.count(i) > 1})
-        if duplicates:
-            raise ValueError(f"duplicate rule ids: {duplicates}")
+    def __init__(
+        self, rules: Sequence[Rule], max_evidence: int = MAX_EVIDENCE, max_groups: int = DEFAULT_MAX_GROUPS
+    ) -> None:
+        _check_unique(rules)
         self._rules = list(rules)
         self._max_evidence = max_evidence
+        self._max_groups = max_groups
+        self.evicted_groups = 0  # after run(): groups forgotten early because of max_groups
 
     def run(self, events: Iterable[Event]) -> List[Alert]:
         """Evaluate every rule over ``events``, which must be in time order."""
-        evaluators = [_evaluator(rule, self._max_evidence) for rule in self._rules]
+        evaluators = [_evaluator(rule, self._max_evidence, self._max_groups) for rule in self._rules]
         alerts: List[Alert] = []
         last_ts: Optional[datetime] = None
         for n, event in enumerate(events, 1):
@@ -417,9 +458,11 @@ class ReplayEngine:
             if n % _SWEEP_EVERY == 0:
                 for evaluator in evaluators:
                     evaluator.sweep(last_ts, alerts)
+                    evaluator.touched.clear()  # only streaming reads it
 
         for evaluator in evaluators:
             evaluator.finish(alerts)
+        self.evicted_groups = sum(evaluator.evicted for evaluator in evaluators)
         alerts.sort(key=lambda a: (a.first_seen, a.rule_id, a.group_key))
         return alerts
 

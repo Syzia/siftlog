@@ -78,6 +78,11 @@ _COLUMNS = (
     "evidence_truncated, mitre, summary, status, status_changed_at, note, superseded"
 )
 _BREAKDOWNS = {"status", "severity", "rule_id"}  # the only columns stats may group by
+# What a stored alert is compared against to tell "updated" from "unchanged".
+_ROW = (
+    "SELECT id, status, superseded, title, severity, last_seen, event_count, distinct_count, "
+    "evidence_truncated, mitre, summary FROM alerts"
+)
 
 
 @dataclass(frozen=True)
@@ -167,49 +172,12 @@ class AlertStoreMixin:
         with self._conn:
             marks = ",".join("?" * len(rule_ids))  # placeholders only; values are bound
             existing: Dict[str, Tuple[Any, ...]] = {
-                row[0]: row
-                for row in self._conn.execute(
-                    "SELECT id, status, superseded, title, severity, last_seen, event_count, distinct_count, "
-                    f"evidence_truncated, mitre, summary FROM alerts WHERE rule_id IN ({marks})",
-                    rule_ids,
-                )
+                row[0]: row for row in self._conn.execute(f"{_ROW} WHERE rule_id IN ({marks})", rule_ids)
             }
             seen = set()
             for alert in alerts:
                 seen.add(alert.id)
-                detection = _detection(alert)
-                row = existing.get(alert.id)
-                if row is None:
-                    self._conn.execute(
-                        "INSERT INTO alerts (id, rule_id, group_key, first_seen, title, severity, last_seen, "
-                        "event_count, distinct_count, evidence_truncated, mitre, summary) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (alert.id, alert.rule_id, alert.group_key, to_micros(alert.first_seen)) + detection,
-                    )
-                    self._write_evidence(alert)
-                    counts["new"] += 1
-                    continue
-
-                status, was_superseded, old_last_seen = row[1], row[2], row[5]
-                if tuple(row[3:]) == detection:
-                    counts["unchanged"] += 1
-                else:
-                    self._conn.execute(
-                        "UPDATE alerts SET title = ?, severity = ?, last_seen = ?, event_count = ?, "
-                        "distinct_count = ?, evidence_truncated = ?, mitre = ?, summary = ? WHERE id = ?",
-                        detection + (alert.id,),
-                    )
-                    self._conn.execute("DELETE FROM alert_events WHERE alert_id = ?", (alert.id,))
-                    self._write_evidence(alert)
-                    counts["updated"] += 1
-                    if status == "closed" and detection[2] > old_last_seen:
-                        self._change_status(
-                            alert.id, "closed", "open", SYSTEM_ACTOR, now_us,
-                            "reopened: activity continued after the alert was closed",
-                        )  # fmt: skip
-                        counts["reopened"] += 1
-                if was_superseded:
-                    self._conn.execute("UPDATE alerts SET superseded = 0 WHERE id = ?", (alert.id,))
+                self._upsert(alert, existing.get(alert.id), counts, now_us)
 
             for alert_id, row in existing.items():
                 if alert_id in seen:
@@ -224,6 +192,56 @@ class AlertStoreMixin:
                     self._conn.execute("UPDATE alerts SET superseded = 1 WHERE id = ?", (alert_id,))
                     counts["superseded"] += 1
         return SyncReport(**counts)
+
+    def upsert_alerts(self, alerts: Iterable[Alert], now: Optional[datetime] = None) -> SyncReport:
+        """Store new alerts and update ones that changed, removing nothing.
+
+        This is what streaming uses: it sees alerts a few at a time, so the
+        absence of an alert from one batch says nothing about whether it still
+        exists. The same rules apply as for a full sync: decisions are kept, and
+        a closed alert that gained activity is reopened.
+        """
+        now_us = to_micros(now or datetime.now(timezone.utc))
+        counts = dict.fromkeys(("new", "updated", "unchanged", "reopened", "removed", "superseded"), 0)
+        with self._conn:
+            for alert in alerts:
+                row = self._conn.execute(f"{_ROW} WHERE id = ?", (alert.id,)).fetchone()
+                self._upsert(alert, row, counts, now_us)
+        return SyncReport(**counts)
+
+    def _upsert(self, alert: Alert, row: Optional[Tuple[Any, ...]], counts: Dict[str, int], now_us: int) -> None:
+        detection = _detection(alert)
+        if row is None:
+            self._conn.execute(
+                "INSERT INTO alerts (id, rule_id, group_key, first_seen, title, severity, last_seen, "
+                "event_count, distinct_count, evidence_truncated, mitre, summary) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (alert.id, alert.rule_id, alert.group_key, to_micros(alert.first_seen)) + detection,
+            )
+            self._write_evidence(alert)
+            counts["new"] += 1
+            return
+
+        status, was_superseded, old_last_seen = row[1], row[2], row[5]
+        if tuple(row[3:]) == detection:
+            counts["unchanged"] += 1
+        else:
+            self._conn.execute(
+                "UPDATE alerts SET title = ?, severity = ?, last_seen = ?, event_count = ?, "
+                "distinct_count = ?, evidence_truncated = ?, mitre = ?, summary = ? WHERE id = ?",
+                detection + (alert.id,),
+            )
+            self._conn.execute("DELETE FROM alert_events WHERE alert_id = ?", (alert.id,))
+            self._write_evidence(alert)
+            counts["updated"] += 1
+            if status == "closed" and detection[2] > old_last_seen:
+                self._change_status(
+                    alert.id, "closed", "open", SYSTEM_ACTOR, now_us,
+                    "reopened: activity continued after the alert was closed",
+                )  # fmt: skip
+                counts["reopened"] += 1
+        if was_superseded:
+            self._conn.execute("UPDATE alerts SET superseded = 0 WHERE id = ?", (alert.id,))
 
     def set_alert_status(
         self,

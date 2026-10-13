@@ -6,6 +6,18 @@ Attacker addresses and file hashes are deliberately not recorded here, in line w
 
 ---
 
+## 2026-10-13: Live detection (stage 6)
+
+**Summary.** One process now follows a log file and raises alerts within about two seconds. Three problems surfaced while building it, none of which the first round of tests caught.
+
+- **The log follower returned garbage after an in-place rewrite.** When a file was overwritten with longer content, it read from its old position in the *new* content, producing half a line, and only then noticed the change. It now checks for an in-place rewrite before reading. A rename is the opposite case: there the old file is still intact, and must be read to its end first.
+- **It could not be stopped cleanly by anything but Ctrl+C.** `kill` and systemd send a different signal, which ended the process without evaluating the events it was still holding. Found because a test script hung: a process started in the background ignores Ctrl+C-style interrupts. There is now a test that runs the real command and stops it with that signal.
+- **Two checks looked redundant and were not.** The truncation check never mattered in the first truncation test, because the first line also changed. It matters when a file is cut shorter but keeps its first line. Likewise nothing tested that a file rotated in on 1 January continues the year the old file had reached.
+
+Design points worth remembering: the watcher rebuilds everything from the store when it starts, which is what makes a restart mid-attack safe; and its two-second wait is how slightly out-of-order events get put right.
+
+---
+
 ## 2026-10-13: First real attacker, and an unlimited upload
 
 **Summary.** Within about an hour of opening the honeypot to the internet, a bot guessed a password, logged in, and uploaded a 30 MB file named `sshd`. The upload exposed a gap in our setup: Cowrie had no limit on transfer size. The limit is now on, and the runbook requires it.
