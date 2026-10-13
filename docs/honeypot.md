@@ -350,12 +350,16 @@ A honeypot is not a server with users, and two things about its data shape the r
 | Rule | Fires when one address | Severity |
 |------|------------------------|----------|
 | `honeypot-file-transfer` | uploads a file, makes the honeypot download one (failed downloads included), or writes one with a shell command | high |
-| `honeypot-shell-commands` | runs any command after logging in | medium |
+| `honeypot-ssh-key-planted` | runs a command that touches `authorized_keys` | high |
+| `honeypot-payload-launch` | runs a command containing `chmod +x` or `nohup` | high |
+| `honeypot-shell-commands` | runs any command other than a known login-check probe | medium |
 | `honeypot-credential-sweep` | tries five or more usernames within ten minutes | low |
 
-One visit is one alert. The same address coming back hours later is a new one.
+Each rule raises one alert per visit. The same address coming back hours later is a new one. A visit that does several things raises several alerts, one per rule: read the high ones first.
 
-`honeypot-shell-commands` is the noisy one. It cannot tell a lone `uname` from a malware install, because rules cannot yet match on the text of a command. Read the high-severity alerts first.
+`honeypot-shell-commands` is the catch-all. It ignores the one-line commands bots use to check that a login worked (`uname -a` and one variant so far), matched exactly, so `uname -a; wget ...` still counts. When a new probe shows up as a lone alert, add it to the `exclude` list in `rules/honeypot-shell-commands.yml`.
+
+The phrases the two text rules look for are the ones real traffic has shown so far. Expect to add to them.
 
 **After changing the parser, rebuild the database.** Ingest skips lines it has already stored, so events parsed by an older version keep their old fields. Delete `data/honeypot.db` and run step 2 again. Decisions recorded on its alerts are lost with it.
 

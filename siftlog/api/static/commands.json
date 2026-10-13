@@ -109,7 +109,7 @@
           "title": "3. Run the rules and save the alerts",
           "where": "mac",
           "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.engine --db data/honeypot.db --rules {{rules}} --save",
-          "note": "Only the three honeypot rules can fire here. The ssh rules read real sshd logs."
+          "note": "Only the honeypot rules can fire here. The ssh rules read real sshd logs. Run it again after changing a rule: decisions you have recorded on alerts are kept."
         },
         {
           "title": "4. Open the dashboard on the honeypot data",

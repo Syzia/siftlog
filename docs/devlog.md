@@ -6,6 +6,24 @@ Attacker addresses and file hashes are deliberately not recorded here, in line w
 
 ---
 
+## 2026-10-13: Rules that read what was typed (stage 9)
+
+**Summary.** Rules can now test the text of a command and leave events out. On the same three hours of honeypot data, the alert list went from 11 alerts on 7 addresses, four of them for a lone `uname`, to 10 alerts on 4 addresses, none of them for one.
+
+- **The fix for a noisy rule was not a threshold.** Four of seven command alerts were a lone `uname`. No count separates that from a one-command malware launch. What separates them is the text, so the rule language grew: `extra.input|contains`, `startswith`, `endswith`, `|all`, and an `exclude` block. The names and meanings are Sigma's.
+- **Exclude by exact match, not by prefix.** The first idea was "ignore commands starting with `uname`". That would also ignore `uname -a; wget ...`, which is exactly what an attacker who knew the rule would type. The exclusion is the whole command or nothing. A test types the probe with something added and expects an alert.
+- **No regular expressions.** The text is attacker-typed, and a regex engine that backtracks can be stalled by crafted input. Substring tests cannot. A rule that needs a pattern will have to wait for a safer engine.
+- **A trailing space did real work.** `nohup ` with the space matches the command and not the file `nohup.out`. One of the planted bugs removed the space, and a test caught it.
+- **More alerts per visitor, fewer visitors alerting.** The three visitors who did something now get three alerts each, naming what they did: a planted SSH key, a file made executable, a file written. The four who ran one `uname` and left get none. Their logins are still stored and searchable.
+- **An acted-on alert survived the change.** One of the alerts that no longer exists had been acknowledged, closed and reopened in the dashboard. It was kept with its history and marked superseded, not deleted, which is what that design was for. The three untouched ones were removed.
+- **The phrase lists are short on purpose.** `chmod +x`, `nohup ` and `authorized_keys` are what three hours of traffic showed. Adding the ones everybody knows about (`chmod 777`, `wget`, `curl`) would have been easy and untested against anything real.
+
+- **38 bugs planted, 37 caught.** The survivor was removing `event_type: command` from the key rule. It changes nothing today, because only command events carry typed text. A test now pins the filter anyway, in case another event type gains that field.
+
+**Still open.** Extra fields can be filtered on but not grouped or counted by, so "many passwords for one username" cannot be written yet. Importing Sigma rule files is not done.
+
+---
+
 ## 2026-10-13: First real data, and three things it corrected
 
 **Summary.** Three hours of the honeypot's log went through Siftlog: 4,414 lines, none unparsed, 1,654 events from 21 addresses, 11 alerts. The pipeline held up. Three things written the day before, without real data, did not.

