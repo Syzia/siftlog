@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Mini SIEM: log ingestion, normalization and YAML rule-based detection"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = ["PyYAML>=6"]
 
 [tool.setuptools.packages.find]
 include = ["siftlog*"]

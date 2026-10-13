@@ -147,7 +147,19 @@ Notes on the rule semantics:
 
 Engine runs in **streaming mode** (evaluate each new event against the state it needs) and **replay mode** (run all rules over a stored time range, used for tests and backtesting). Build replay first, since it's deterministic and easy to test. Replay sorts by event timestamp. Streaming has to tolerate slightly out-of-order arrival, so decide on an allowed lateness up front.
 
-**Alerts are episodes, not windows.** When a rule's condition first becomes true for a group key, open an alert. While matching events keep arriving, extend `last_seen` and `event_count`. After `cooldown` (default: the rule's `timespan`) with no matches, the episode ends and a later burst opens a new alert. There is at most one open alert per `(rule_id, group_key)`, so one attack produces one alert, not 500. Closing an alert means "handled", not "muted": if the attack is still running, the next match opens a fresh one.
+**Alerts are episodes, not windows.** When a rule's condition first becomes true for a group key, open an alert. Each new event that arrives **while the condition still holds** extends `last_seen` and `event_count`. Once the condition has not held for `cooldown` (default: the rule's `timespan`), the episode ends and a later burst opens a new alert.
+
+> **Corrected during stage 3.** The first draft said "while matching events keep arriving". That is wrong for any rule grouped by host: an internet-facing host always has auth failures, so the first stuffing alert would never close and would swallow every later attack. The episode has to follow the condition, not the event stream. A regression test covers it. There is at most one open alert per `(rule_id, group_key)`, so one attack produces one alert, not 500. Closing an alert means "handled", not "muted": if the attack is still running, the next match opens a fresh one.
+
+As built (stage 3):
+- **Replay engine** (`siftlog/engine/replay.py`) with `event_count` and `value_count`. `temporal` and `impossible_travel` are stage 4.
+- **The window is `(t - timespan, t]`**, ending at the newest event. An event exactly one timespan old is outside it.
+- **`first_seen` is the earliest event in the window that triggered the alert**, and the evidence is that whole window plus everything that arrives while the condition holds. For a host-level rule this can predate the attack by up to one timespan.
+- **Evidence ids are capped at 1,000 per alert** (`evidence_truncated` says when). Counts stay exact. This bounds what one attacker can make a single alert hold.
+- **Idle groups are dropped** as replay proceeds, so memory follows the number of active groups rather than every key ever seen. A test checks this never changes the result.
+- **Rule files are validated strictly and loaded with `yaml.safe_load`.** An unknown key is an error, so a typo such as `treshold` stops the engine instead of producing a rule that never fires.
+- **Alert ids are deterministic:** a hash of rule id, group key and `first_seen`.
+- **Scoring** (`siftlog/engine/scoring.py`) judges each alert on its own evidence, using the simulator's per-line labels: an alert is *false* only if most of its evidence is benign. Duplicates and "bonus" detections of unexpected attacks are counted separately. Measured results are in [results.md](results.md).
 
 ### 7. Alert Store
 ```
