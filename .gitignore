@@ -32,6 +32,9 @@ cowrie.json*
 node_modules/
 dashboard/dist/
 
+# This machine's own settings (honeypot address, key path): never committed
+siftlog.local.json
+
 # Local preview config
 .claude/launch.json
 

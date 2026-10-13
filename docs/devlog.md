@@ -6,6 +6,18 @@ Attacker addresses and file hashes are deliberately not recorded here, in line w
 
 ---
 
+## 2026-10-13: Local dashboard (stage 7)
+
+**Summary.** The API now serves a dashboard: overview, alerts with their evidence and a decision workflow, event search, and a copyable command list. It was checked in a real browser against live data, including the real honeypot.
+
+- **Not React, on purpose.** One HTML file, one stylesheet and one script. There is nothing to install or build, and nothing is fetched from the internet.
+- **`append(null)` prints the word "null".** The first render showed it in the middle of the honeypot panel. Building everything through one helper that skips missing pieces fixed it; the browser check is what caught it, since no Python test looks at rendered output.
+- **Pasting a token was the hardest part of the API for a newcomer.** An abbreviated token shown in a chat message got pasted as if it were the real one, and every request came back 401. The server now prints a link that signs the dashboard in by itself.
+- **A demo command taught the wrong lesson.** It stamped its lines with fixed times, so running it twice looked like old data and was skipped by live detection. The version in the command list stamps lines with the current time.
+- **Checking the honeypot is itself a visit.** A check on a timer would have filled the honeypot's data with this machine's address, so it runs only on a click and the answer is kept for a minute.
+
+---
+
 ## 2026-10-13: Live detection (stage 6)
 
 **Summary.** One process now follows a log file and raises alerts within about two seconds. Three problems surfaced while building it, none of which the first round of tests caught.

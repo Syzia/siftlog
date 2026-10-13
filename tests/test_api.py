@@ -23,7 +23,8 @@ RULES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rules")
 TOKEN = "test-token-not-a-real-secret"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 PROTECTED = [("GET", "/alerts"), ("GET", "/alerts/abc"), ("PATCH", "/alerts/abc"),
-             ("GET", "/events"), ("GET", "/stats"), ("GET", "/rules")]  # fmt: skip
+             ("GET", "/events"), ("GET", "/stats"), ("GET", "/rules"), ("GET", "/commands"),
+             ("GET", "/honeypot"), ("POST", "/honeypot/check")]  # fmt: skip
 
 
 class ApiTestCase(unittest.TestCase):
@@ -71,11 +72,11 @@ class AuthTests(ApiTestCase):
         response = self.client.get("/health")
         self.assertEqual((response.status_code, response.json()), (200, {"status": "ok"}))
 
-    def test_the_bare_address_leads_to_the_documentation(self):
+    def test_the_bare_address_leads_to_the_dashboard(self):
         response = self.client.get("/", follow_redirects=False)
-        self.assertEqual((response.status_code, response.headers["location"]), (307, "/docs"))
-        self.assertEqual(self.client.get("/").status_code, 200)  # following it reaches the docs page
-        self.assertIn("swagger", self.client.get("/docs").text.lower())
+        self.assertEqual((response.status_code, response.headers["location"]), (307, "/dashboard/"))
+        self.assertIn("<title>Siftlog</title>", self.client.get("/").text)  # following it reaches the page
+        self.assertIn("swagger", self.client.get("/docs").text.lower())  # the API docs are still there
 
     def test_every_other_route_refuses_without_the_token(self):
         attempts = {
@@ -107,7 +108,8 @@ class AuthTests(ApiTestCase):
 
     def test_openapi_documents_the_bearer_scheme(self):
         spec = self.client.get("/openapi.json").json()
-        self.assertEqual(sorted(spec["paths"]), ["/alerts", "/alerts/{alert_id}", "/events", "/health", "/rules", "/stats"])
+        self.assertEqual(sorted(spec["paths"]), ["/alerts", "/alerts/{alert_id}", "/commands", "/events", "/health",
+                                                 "/honeypot", "/honeypot/check", "/rules", "/stats"])  # fmt: skip
         self.assertIn("security", spec["paths"]["/alerts"]["get"])
         self.assertNotIn("security", spec["paths"]["/health"]["get"])
 
@@ -328,28 +330,31 @@ class CliTests(ApiTestCase):
         environment.update(env or {})
         err = io.StringIO()
         with mock.patch.dict(os.environ, environment, clear=True), contextlib.redirect_stderr(err):
-            return build(["--db", self.db, "--rules", RULES_DIR, *argv]), err.getvalue()
+            # Point at a settings file that is not there, so a developer's own
+            # siftlog.local.json (with a real honeypot address) is never picked up by a test.
+            unused = os.path.join(os.path.dirname(self.db), "no-local-settings.json")
+            return build(["--db", self.db, "--rules", RULES_DIR, "--local-config", unused, *argv]), err.getvalue()
 
     def test_generates_a_token_when_none_is_set(self):
-        (app, host, port), printed = self.build()
-        self.assertEqual((host, port), ("127.0.0.1", 8000))
-        token = printed.strip().rsplit(" ", 1)[-1]
+        server, printed = self.build()
+        self.assertEqual((server.host, server.port), ("127.0.0.1", 8000))
+        token = printed.splitlines()[0].rsplit(" ", 1)[-1]
         self.assertGreaterEqual(len(token), 32)
-        client = TestClient(app)
+        client = TestClient(server.app)
         self.assertEqual(client.get("/alerts", headers={"Authorization": f"Bearer {token}"}).status_code, 200)
         self.assertEqual(client.get("/alerts", headers=AUTH).status_code, 401)
 
     def test_uses_the_configured_token_and_does_not_print_it(self):
-        (app, _, _), printed = self.build(env={TOKEN_ENV: TOKEN})
+        server, printed = self.build(env={TOKEN_ENV: TOKEN})
         self.assertNotIn(TOKEN, printed)
-        self.assertEqual(TestClient(app).get("/alerts", headers=AUTH).status_code, 200)
+        self.assertEqual(TestClient(server.app).get("/alerts", headers=AUTH).status_code, 200)
 
     def test_refuses_to_leave_loopback_with_a_generated_token(self):
         with self.assertRaises(SystemExit) as stop:
             self.build("--host", "0.0.0.0")
         self.assertEqual(stop.exception.code, 2)
-        (_, host, _), printed = self.build("--host", "0.0.0.0", env={TOKEN_ENV: TOKEN})
-        self.assertEqual(host, "0.0.0.0")
+        server, printed = self.build("--host", "0.0.0.0", env={TOKEN_ENV: TOKEN})
+        self.assertEqual(server.host, "0.0.0.0")
         self.assertIn("plain HTTP", printed)
 
     def test_missing_database_or_rules_is_an_error_not_an_empty_server(self):

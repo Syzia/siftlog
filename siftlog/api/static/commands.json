@@ -1,0 +1,161 @@
+{
+  "groups": [
+    {
+      "title": "Start here",
+      "about": "The two you will use most.",
+      "commands": [
+        {
+          "title": "Open this dashboard",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.api --db {{db}} --rules {{rules}} --open",
+          "note": "Starts the API and opens the dashboard in your browser, already signed in. Stop it with Ctrl+C."
+        },
+        {
+          "title": "Run the tests",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m pytest -q",
+          "note": "Should end with a line like \"284 passed\"."
+        }
+      ]
+    },
+    {
+      "title": "Simulated data, step by step",
+      "about": "Generate a labelled practice log and run it through the whole pipeline. Each step is safe to repeat.",
+      "commands": [
+        {
+          "title": "1. Generate a practice log",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.simulator --seed 1234 --out data/demo.log",
+          "note": "Writes data/demo.log and a label file saying which lines belong to which attack."
+        },
+        {
+          "title": "2. Parse it into the database",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.ingest data/demo.log --db {{db}} --year 2026"
+        },
+        {
+          "title": "3. Add locations",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.enrich --db {{db}} --simulated",
+          "note": "The impossible-travel rule needs these."
+        },
+        {
+          "title": "4. Run the rules and save the alerts",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.engine --db {{db}} --rules {{rules}} --save",
+          "note": "Never erases a decision you recorded on an alert."
+        },
+        {
+          "title": "Measure the rules across 50 simulations",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.evaluate --published",
+          "note": "Prints the tables in docs/results.md. Takes about ten seconds."
+        }
+      ]
+    },
+    {
+      "title": "Live detection",
+      "about": "Follow a log as it grows. Alerts appear here within a couple of seconds.",
+      "commands": [
+        {
+          "title": "Follow a log file",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.watch data/demo.log --db {{db}} --rules {{rules}} --year 2026 --simulated-geo",
+          "note": "Prints ALERT and update lines as they happen. Run it in its own Terminal window; stop it with Ctrl+C."
+        },
+        {
+          "title": "Send a fake attack to the followed log",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && NOW=$(date -u +%Y-%m-%dT%H:%M:%S) && for i in $(seq 0 11); do printf '%s.%06d+00:00 web01 sshd[1]: Failed password for root from 203.0.113.77 port 22 ssh2\\n' \"$NOW\" \"$i\" >> data/demo.log; done",
+          "note": "Twelve failed logins stamped with the current time, so each run counts as newer than the last. Run it in a second window while the follower is running."
+        }
+      ]
+    },
+    {
+      "title": "Honeypot: from your Mac",
+      "about": "The honeypot keeps running whether or not you are connected.",
+      "commands": [
+        {
+          "title": "Log in to the honeypot server",
+          "where": "mac",
+          "command": "ssh -i {{honeypot_key}} -p {{honeypot_port}} {{honeypot_user}}@{{honeypot_host}}",
+          "note": "Asks for your key passphrase. The prompt changes to root@HoneyPot. Type exit to leave."
+        },
+        {
+          "title": "Watch attacks arrive, in one step",
+          "where": "mac",
+          "command": "ssh -i {{honeypot_key}} -p {{honeypot_port}} -t {{honeypot_user}}@{{honeypot_host}} 'tail -f {{honeypot_dir}}/var/log/cowrie/cowrie.log'",
+          "note": "Any address that is not yours is a real visitor. Ctrl+C stops watching and disconnects."
+        },
+        {
+          "title": "Copy the honeypot's logs to this Mac",
+          "where": "mac",
+          "command": "mkdir -p {{honeypot_logs}} && rsync -av -e \"ssh -i {{honeypot_key}} -p {{honeypot_port}}\" {{honeypot_user}}@{{honeypot_host}}:{{honeypot_dir}}/var/log/cowrie/ {{honeypot_logs}}/",
+          "note": "Copies into a folder outside the repo. Never copy anything from the downloads folder: that is live malware."
+        }
+      ]
+    },
+    {
+      "title": "Honeypot: after logging in",
+      "about": "Run these at the root@HoneyPot prompt.",
+      "commands": [
+        {
+          "title": "Is it running?",
+          "where": "honeypot",
+          "command": "systemctl is-active cowrie cowrie-redirect; ss -tln | grep ':2222 '",
+          "note": "You want active, active, and a LISTEN line."
+        },
+        {
+          "title": "Who has visited",
+          "where": "honeypot",
+          "command": "grep -o '\"src_ip\":\"[^\"]*\"' {{honeypot_dir}}/var/log/cowrie/cowrie.json | sort | uniq -c | sort -rn | head -20",
+          "note": "Log entries per address, busiest first."
+        },
+        {
+          "title": "Usernames and passwords tried",
+          "where": "honeypot",
+          "command": "grep -o '\"message\":\"login attempt[^\"]*\"' {{honeypot_dir}}/var/log/cowrie/cowrie.json | sort | uniq -c | sort -rn | head -20"
+        },
+        {
+          "title": "Files uploaded or downloaded",
+          "where": "honeypot",
+          "command": "grep -E 'file_upload|file_download' {{honeypot_dir}}/var/log/cowrie/cowrie.json | tail -5",
+          "note": "Each record has a shasum you can search for on VirusTotal. Search by hash only; never upload or open the file."
+        },
+        {
+          "title": "Disk space and stored payloads",
+          "where": "honeypot",
+          "command": "df -h / && ls -la {{honeypot_dir}}/var/lib/cowrie/downloads/",
+          "note": "Worth a look about once a week."
+        },
+        {
+          "title": "Restart Cowrie",
+          "where": "honeypot",
+          "command": "systemctl restart cowrie && systemctl is-active cowrie",
+          "note": "Needed after changing its config. Down for a couple of seconds."
+        },
+        {
+          "title": "Leave the server",
+          "where": "honeypot",
+          "command": "exit",
+          "note": "Only hangs up your connection. The honeypot keeps recording."
+        }
+      ]
+    },
+    {
+      "title": "Project housekeeping",
+      "commands": [
+        {
+          "title": "What has changed",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && git status -sb && git log --oneline -8"
+        },
+        {
+          "title": "Open pull requests",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && gh pr list"
+        }
+      ]
+    }
+  ]
+}
