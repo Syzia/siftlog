@@ -12,7 +12,7 @@ Simulated traffic first, so every rule is tested against labelled attack and ben
 
 | Stage | Deliverable | Status |
 |-------|-------------|--------|
-| 0 | Cowrie honeypot on an isolated VPS | not started |
+| 0 | Cowrie honeypot on an isolated VPS ([runbook](docs/honeypot.md)) | runbook written, not deployed |
 | 1 | Labelled log simulator + SSH parser + event schema | done |
 | 2 | SQLite event store + idempotent batch ingest | done |
 | 3 | Replay-mode engine, `event_count` and `value_count` rules | not started |

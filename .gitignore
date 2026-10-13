@@ -23,6 +23,8 @@ dist/
 *.sqlite3
 *.mmdb
 data/
+honeypot-logs/
+cowrie.json*
 !tests/fixtures/*.log
 
 # Dashboard
