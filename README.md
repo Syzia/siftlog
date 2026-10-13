@@ -34,6 +34,27 @@ The five rules raise **every alert they should, with no duplicates**. They are a
 
 These are simulated-data numbers and the thresholds were tuned against the simulator, so read them as a correctness check, not a performance claim. Definitions, known gaps, and sweeps showing where each rule breaks are in [docs/results.md](docs/results.md). A test regenerates these tables and fails if they drift from the code.
 
+### First real data
+
+The first three hours of the honeypot's log (2026-10-13), run through the same pipeline. Counts only: addresses, passwords and file hashes stay out of this repository.
+
+| | |
+|---|---:|
+| Log lines read | 4,414 |
+| Lines not understood | 0 |
+| Events stored | 1,654 |
+| Addresses that connected | 21 |
+| ...that logged in | 9 |
+| ...that ran a command | 7 |
+| ...that put a file on the honeypot | 3 |
+| Alerts raised | 11, on 7 addresses |
+
+- **The three high-severity alerts were all worth reading:** a program uploaded under the name `sshd` and started in the background, the `.ssh` folder deleted and recreated holding only the attacker's key, and a script that writes and runs a small file to test whether it is on a honeypot.
+- **One address produced 91% of the events:** 500 logins in 76 minutes, across 441 usernames, each followed by one `uname`. That became two alerts, not a thousand.
+- **The commands rule is too coarse.** Four of its seven alerts were for a lone `uname`. It cannot tell that from the malware install, because rules cannot yet match on the text of a command.
+
+There is no precision or recall here: a honeypot log has no ground truth to score against. What real data did was correct three assumptions, recorded in [docs/devlog.md](docs/devlog.md).
+
 ## Quick start
 
 Needs Python 3.9 or newer. A local virtualenv keeps it tidy (`.venv/` is git-ignored):

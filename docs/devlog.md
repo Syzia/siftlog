@@ -6,6 +6,36 @@ Attacker addresses and file hashes are deliberately not recorded here, in line w
 
 ---
 
+## 2026-10-13: First real data, and three things it corrected
+
+**Summary.** Three hours of the honeypot's log went through Siftlog: 4,414 lines, none unparsed, 1,654 events from 21 addresses, 11 alerts. The pipeline held up. Three things written the day before, without real data, did not.
+
+### What was in it
+
+- Of 21 addresses, 12 only connected, 9 logged in, 7 ran a command and 3 put a file on the honeypot. There were 529 successful logins and 2 failed ones.
+- One address made 500 logins in 76 minutes, about nine seconds apart, with 441 different usernames. Each login ran one `uname` and left. That is 1,501 of the 1,654 events, and it became two alerts.
+- The three file alerts: a program uploaded as `sshd` and started with `nohup` (the upload already recorded below), the `.ssh` folder unlocked, deleted and recreated holding only the attacker's key, and a script that writes a small file, runs it and deletes it, 15 times over, to see whether the machine behaves like a real one.
+
+### What it corrected
+
+- **"Download" was the wrong word for 16 of 17 file events.** Cowrie logs a file created by a shell command, such as `echo key >> .ssh/authorized_keys`, as `cowrie.session.file_download` with no URL. The parser labelled them downloads and the dashboard showed a download of nothing. They are now marked `written`, with the path. The made-up test log had no such record, because nobody had seen one yet.
+- **"Most visitors only test a password and leave" was wrong.** That sentence was in a rule description. Of the 9 addresses that logged in, 7 ran a command. The accurate statement is that most visitors never log in at all.
+- **The commands rule cannot tell what matters.** Four of its seven alerts were a lone `uname`. Raising the threshold would not help: the SSH-key session ran two commands and the malware session ran one. Telling them apart needs rules that can match on the text of a command, which the rule language cannot do yet.
+
+### What held
+
+- **Nothing went to the dead-letter table.** Six kinds of record became events. Twelve more were ignored and counted, including `cowrie.command.success`, which was not in the notes the parser was written from. It was ignored with its name as the reason, which is what that path is for.
+- **The sweep threshold separates cleanly, on this one day.** Usernames tried per address: 441 for one, and 3 or fewer for the other eight. Five is between them.
+- **Leaving out your own address worked.** Seven lines, counted as ignored.
+
+### Lessons
+
+- A test log written from documentation tests what the documentation says. The redirect records were the first thing real data showed that it did not.
+- Do not put a claim about attackers in a rule description before there is data to check it.
+- Changing what a parser extracts means rebuilding the database, because ingest skips lines it has already stored. Analyst decisions on that database's alerts are lost. Fine today, with eleven untouched alerts. Not fine later.
+
+---
+
 ## 2026-10-13: Honeypot data through the pipeline (stage 8)
 
 **Summary.** Siftlog can now read the honeypot's own log format. A Cowrie parser, three honeypot rules, and a way to leave your own visits out. Built from the layout of real records and Cowrie's documentation, and tested against an invented log in that layout.

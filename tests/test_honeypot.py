@@ -36,8 +36,10 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 # What the shipped rules should say about the fixture: (rule, address, events, distinct usernames).
 EXPECTED_ALERTS = [
     ("honeypot-credential-sweep", "203.0.113.90", 6, 6),  # six accounts tried from one address
+    ("honeypot-file-transfer", "198.51.100.150", 1, None),  # an SSH key written into authorized_keys
     ("honeypot-file-transfer", "198.51.100.77", 2, None),  # one download that worked, one that failed
     ("honeypot-file-transfer", "203.0.113.45", 1, None),  # the SFTP upload
+    ("honeypot-shell-commands", "198.51.100.150", 1, None),
     ("honeypot-shell-commands", "198.51.100.77", 7, None),
 ]
 
@@ -79,12 +81,12 @@ class IngestCommandTests(HoneypotTestCase):
     def test_a_cowrie_log_is_ingested_without_a_year(self):
         out, err, code = run(ingest_cli, FIXTURE, "--source", "cowrie", "--db", self.db)
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("66 lines -> 31 new events, 0 already stored, 35 ignored, 0 dead letters", out)
+        self.assertIn("74 lines -> 35 new events, 0 already stored, 39 ignored, 0 dead letters", out)
         self.assertNotIn("eventid:", out)  # the breakdown is only shown when asked for
         with EventStore(self.db) as store:
-            self.assertEqual((store.count(), store.dead_letter_count()), (31, 0))
+            self.assertEqual((store.count(), store.dead_letter_count()), (35, 0))
             self.assertEqual(store.event_type_counts(), {
-                "connection": 10, "auth_success": 9, "command": 7, "file_transfer": 3, "auth_failure": 2,
+                "connection": 11, "auth_success": 10, "command": 8, "file_transfer": 4, "auth_failure": 2,
             })  # fmt: skip
             (upload,) = [e for e in store.query(event_type=FILE_TRANSFER) if e.extra["direction"] == "upload"]
             self.assertEqual((upload.source, upload.src_ip, upload.extra["filename"]), ("cowrie", "203.0.113.45", "sshd"))
@@ -94,10 +96,10 @@ class IngestCommandTests(HoneypotTestCase):
         out, _, code = run(ingest_cli, FIXTURE, "--source", "cowrie", "--db", self.db, "--show-ignored")
         self.assertEqual(code, 0)
         reasons = [line.split() for line in out.splitlines() if line.startswith("    ignored")]
-        self.assertEqual(reasons[:3], [["ignored", "10", "eventid:cowrie.client.kex"],
-                                       ["ignored", "10", "eventid:cowrie.client.version"],
-                                       ["ignored", "10", "eventid:cowrie.session.closed"]])  # fmt: skip
-        self.assertEqual(sum(int(count) for _, count, _ in reasons), 35)
+        self.assertEqual(reasons[:3], [["ignored", "11", "eventid:cowrie.client.kex"],
+                                       ["ignored", "11", "eventid:cowrie.client.version"],
+                                       ["ignored", "11", "eventid:cowrie.session.closed"]])  # fmt: skip
+        self.assertEqual(sum(int(count) for _, count, _ in reasons), 39)
         self.assertIn(["ignored", "1", "eventid:cowrie.direct-tcpip.request"], reasons)
 
     def test_an_sshd_log_still_needs_a_year_and_nothing_is_written_without_one(self):
@@ -116,21 +118,22 @@ class IngestCommandTests(HoneypotTestCase):
         run(ingest_cli, FIXTURE, "--source", "cowrie", "--db", self.db)
         out, _, code = run(ingest_cli, FIXTURE, rotated, zipped, "--source", "cowrie", "--db", self.db)
         self.assertEqual(code, 0)
-        self.assertEqual(out.count("66 lines -> 0 new events, 31 already stored"), 3)
+        self.assertEqual(out.count("74 lines -> 0 new events, 35 already stored"), 3)
         with EventStore(self.db) as store:
-            self.assertEqual(store.count(), 31)
+            self.assertEqual(store.count(), 35)
 
     def test_your_own_address_is_left_out(self):
         out, _, code = run(ingest_cli, FIXTURE, "--source", "cowrie", "--db", self.db, "--show-ignored",
                            "--ignore-ip", "198.51.100.77", "--ignore-ip", "203.0.113.44/31")  # fmt: skip
         self.assertEqual(code, 0)
-        self.assertIn("66 lines -> 15 new events", out)  # 31, less 13 from one address and 3 from the other
+        self.assertIn("74 lines -> 19 new events", out)  # 35, less 13 from one address and 3 from the other
         self.assertIn(["ignored", "16", "own-address"], [line.split() for line in out.splitlines()])
         with EventStore(self.db) as store:
             self.assertEqual(store.query(src_ip="198.51.100.77"), [])
             self.assertEqual(store.query(src_ip="203.0.113.45"), [])
             alerts = ReplayEngine(self.rules).run(store.iter_events())
-        self.assertEqual(summary(alerts), [EXPECTED_ALERTS[0]])  # no alerts about yourself
+        mine = ("198.51.100.77", "203.0.113.45")
+        self.assertEqual(summary(alerts), [e for e in EXPECTED_ALERTS if e[1] not in mine])  # no alerts about yourself
 
     def test_a_mistyped_address_stops_the_run_before_anything_is_written(self):
         _, err, code = run(ingest_cli, FIXTURE, "--source", "cowrie", "--db", self.db, "--ignore-ip", "home")
@@ -171,7 +174,7 @@ class DetectionTests(HoneypotTestCase):
         with EventStore(self.db) as store:
             alerts = ReplayEngine(self.rules).run(store.iter_events())
             store.sync_alerts(alerts, [rule.id for rule in self.rules])
-            commands = next(a for a in alerts if a.rule_id == "honeypot-shell-commands")
+            commands = next(a for a in alerts if (a.rule_id, a.group_key) == ("honeypot-shell-commands", "198.51.100.77"))
             evidence = store.alert_events(commands.id)
         self.assertEqual({e.event_type for e in evidence}, {COMMAND})
         self.assertEqual([e.extra["input"] for e in evidence][:2], ["uname -a", "cat /proc/cpuinfo | grep name | wc -l"])
@@ -221,8 +224,8 @@ class DetectionTests(HoneypotTestCase):
         run(ingest_cli, FIXTURE, "--source", "cowrie", "--db", self.db)
         out, err, code = run(engine_cli, "--db", self.db, "--rules", RULES_DIR, "--save")
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("4 alert(s) from 8 rule(s)", out)
-        self.assertIn("saved: 4 new", out)
+        self.assertIn("6 alert(s) from 8 rule(s)", out)
+        self.assertIn("saved: 6 new", out)
 
         client = TestClient(create_app(self.db, self.rules, TOKEN))
         alerts = client.get("/alerts", headers=AUTH).json()["alerts"]
@@ -232,11 +235,14 @@ class DetectionTests(HoneypotTestCase):
         self.assertEqual([(e["outcome"], e["extra"]["url"]) for e in detail["evidence"]], [
             ("success", "http://203.0.113.200/bins/x86"), ("failure", "http://203.0.113.200/bins/arm7"),
         ])  # fmt: skip
+        key = next(a for a in alerts if (a["rule_id"], a["group_key"]) == ("honeypot-file-transfer", "198.51.100.150"))
+        (written,) = client.get(f"/alerts/{key['id']}", headers=AUTH).json()["evidence"]
+        self.assertEqual((written["extra"]["direction"], written["extra"]["destfile"]), ("written", "/root/.ssh/authorized_keys"))
         page = client.get("/events", headers=AUTH, params={"event_type": "command"}).json()
-        self.assertEqual((page["total"], {e["source"] for e in page["events"]}), (7, {"cowrie"}))
-        self.assertEqual(client.get("/stats", headers=AUTH).json()["events"]["by_type"]["file_transfer"], 3)
+        self.assertEqual((page["total"], {e["source"] for e in page["events"]}), (8, {"cowrie"}))
+        self.assertEqual(client.get("/stats", headers=AUTH).json()["events"]["by_type"]["file_transfer"], 4)
         hits = {r["id"]: r["alerts"] for r in client.get("/rules", headers=AUTH).json()}
-        self.assertEqual((hits["honeypot-file-transfer"], hits["ssh-brute-force"]), (2, 0))
+        self.assertEqual((hits["honeypot-file-transfer"], hits["ssh-brute-force"]), (3, 0))
 
 
 class Clock:
@@ -277,18 +283,18 @@ class WatchTests(HoneypotTestCase):
             again = Watcher([log], store, self.rules, lambda: build_parser("cowrie"), lateness=2.0, clock=clock)
             restarted = again.start()
             again.close()
-            self.assertEqual((restarted.new, restarted.updated, store.count()), (0, 0, 31))
+            self.assertEqual((restarted.new, restarted.updated, store.count()), (0, 0, 35))
 
     def test_watch_command_needs_no_year_for_cowrie(self):
         out, err, code = run(watch_cli, FIXTURE, "--source", "cowrie", "--db", self.db, "--rules", RULES_DIR, "--once")
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("caught up: 31 events stored, 4 alert(s) (4 new, 0 updated, 0 reopened)", out)
+        self.assertIn("caught up: 35 events stored, 6 alert(s) (6 new, 0 updated, 0 reopened)", out)
 
         mine = self.db + ".mine"
         out, _, code = run(watch_cli, FIXTURE, "--source", "cowrie", "--db", mine, "--rules", RULES_DIR, "--once",
                            "--ignore-ip", "198.51.100.77")  # fmt: skip
         self.assertEqual(code, 0)
-        self.assertIn("caught up: 18 events stored, 2 alert(s)", out)
+        self.assertIn("caught up: 22 events stored, 4 alert(s)", out)
 
         _, err, code = run(watch_cli, FIXTURE, "--db", self.db + ".other", "--rules", RULES_DIR, "--once")
         self.assertEqual(code, 2)

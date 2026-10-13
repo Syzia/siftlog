@@ -1,10 +1,12 @@
 id: honeypot-shell-commands
 title: Commands run on the honeypot
 description: >
-  A visitor got past the login and typed commands. Most visitors to a honeypot
-  only test a password and leave, so the ones that go on to run something are
-  the sessions worth reading. One alert per address covers the whole visit.
-  Reads honeypot (Cowrie) events only.
+  A visitor got past the login and ran commands. One alert per address covers
+  the whole visit. Expect this to be the noisiest honeypot rule: on the first
+  day of real data, most addresses that logged in ran something, and for
+  several it was a single uname to check the login worked. The rule cannot
+  tell that from a session installing malware, because rules cannot yet match
+  on the text of a command. Reads honeypot (Cowrie) events only.
 severity: medium
 type: event_count
 filter:

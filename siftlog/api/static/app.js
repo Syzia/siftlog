@@ -63,7 +63,8 @@
     if (event.event_type === "command") return "$ " + text(extra.input);
     if (event.event_type === "connection") return "connected";
     if (event.event_type === "file_transfer") {
-      const what = text(extra.filename) || text(extra.url);
+      // "written" has neither a name nor a URL: it is a file a shell command created, at destfile.
+      const what = text(extra.filename) || text(extra.url) || text(extra.destfile);
       const failed = event.outcome === "failure" ? " failed" : "";
       return `${text(extra.direction) || "transfer"}${failed}: ${what}` + (text(extra.shasum) ? `  sha256 ${extra.shasum}` : "");
     }

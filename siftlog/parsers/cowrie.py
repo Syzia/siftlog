@@ -11,16 +11,24 @@ Cowrie ``eventid``                       Siftlog type       Kept in ``extra``
 ``cowrie.login.success``                 ``auth_success``   ``password`` or key ``fingerprint``
 ``cowrie.command.input``                 ``command``        ``input``
 ``cowrie.session.file_upload``           ``file_transfer``  ``filename``, ``shasum``
-``cowrie.session.file_download``         ``file_transfer``  ``url``, ``shasum``
+``cowrie.session.file_download``         ``file_transfer``  ``url``, ``destfile``, ``shasum``
 ``cowrie.session.file_download.failed``  ``file_transfer``  ``url`` (outcome ``failure``)
 =======================================  =================  ===================================
 
 Every event also keeps Cowrie's ``session`` id in ``extra``, which ties one
 visitor's connection, logins, commands and files together.
 
+A ``file_transfer`` has a ``direction``: ``upload`` (sent over SFTP or SCP),
+``download`` (the honeypot was told to fetch a URL), or ``written``. The last
+one is not obvious from the name: Cowrie also logs ``file_download``, with no
+``url``, when a shell command writes a file, as in ``echo key >>
+.ssh/authorized_keys``. That is a file created on the honeypot, not fetched by
+it, and ``destfile`` says where.
+
 Everything else with a well-formed envelope is **ignored with a reason**: session
-bookkeeping, client fingerprints, and ``cowrie.command.failed``, which repeats a
-``command.input`` that was already counted. A line is a **dead letter** only if
+bookkeeping, client fingerprints, and ``cowrie.command.success`` /
+``cowrie.command.failed``, which repeat a ``command.input`` that was already
+counted. A line is a **dead letter** only if
 it is not something Cowrie would write: not JSON, no event id, no usable
 timestamp, or no source address on an event that needs one.
 
@@ -67,7 +75,7 @@ _MAPPED: Dict[str, Any] = {
     "cowrie.login.success": (AUTH_SUCCESS, OUTCOME_SUCCESS, ("password", "fingerprint"), {}),
     "cowrie.command.input": (COMMAND, None, ("input",), {}),
     "cowrie.session.file_upload": (FILE_TRANSFER, OUTCOME_SUCCESS, ("filename", "shasum", "outfile"), {"direction": "upload"}),
-    "cowrie.session.file_download": (FILE_TRANSFER, OUTCOME_SUCCESS, ("url", "shasum", "outfile"), {"direction": "download"}),
+    "cowrie.session.file_download": (FILE_TRANSFER, OUTCOME_SUCCESS, ("url", "destfile", "shasum", "outfile"), {"direction": "download"}),
     "cowrie.session.file_download.failed": (FILE_TRANSFER, OUTCOME_FAILURE, ("url",), {"direction": "download"}),
 }  # fmt: skip
 
@@ -137,6 +145,9 @@ class CowrieParser:
             value = _text(record.get(name))
             if value is not None:
                 extra[name] = value
+        if event_id == "cowrie.session.file_download" and "url" not in extra:
+            # No URL: nothing was fetched. A shell command wrote this file (see the module docstring).
+            extra["direction"] = "written"
         dst_port = record.get("dst_port")
         if isinstance(dst_port, int) and not isinstance(dst_port, bool):
             extra["dst_port"] = dst_port
