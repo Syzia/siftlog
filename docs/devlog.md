@@ -6,6 +6,22 @@ Attacker addresses and file hashes are deliberately not recorded here, in line w
 
 ---
 
+## 2026-10-13: Honeypot data through the pipeline (stage 8)
+
+**Summary.** Siftlog can now read the honeypot's own log format. A Cowrie parser, three honeypot rules, and a way to leave your own visits out. Built from the layout of real records and Cowrie's documentation, and tested against an invented log in that layout.
+
+- **The existing rules were the wrong rules.** All five count failed logins or compare logins by one user. A honeypot lets nearly everyone in, so the four that count failures would mostly sit silent. The travel rule, once events had locations, would flag `root` again and again, because everyone logs in as root from everywhere. So each rule now names the source it reads, and the honeypot has its own three.
+- **What is interesting on a honeypot is what happens after the login.** An alert for every login would fire on every visitor. The rules fire on the visitors who ran a command or brought a file.
+- **Adding rules nearly spoiled the results table.** The three new rules cannot fire on simulated sshd data, and the first run of the published table showed them as three rows of zeros that read like a result. Rules that cannot read the data being scored are now left out and named underneath.
+- **`ip_address(5)` is a valid address.** Python's address check accepts integers, so a record with a number where the source address belongs passed validation and produced an event whose address was not a string. Noticed while writing the tests for wrong types, before it reached any data.
+- **A `$` in a pattern allows a trailing newline.** `"cowrie.login.failed\n"` matched the event-id pattern. Harmless here, since JSON decoding has already split lines, but both patterns now match the whole string.
+- **One deliberate bug went unnoticed.** Of 30 planted in a scratch copy, the tests caught 29. Shortening the file-transfer rule's window from an hour to five seconds changed nothing, because the test data's transfers were three seconds apart. There is now a test with transfers 50 minutes apart, and one with a return visit six hours later.
+- **Cowrie writes compact JSON.** No spaces after colons or commas. The first draft of the test log had them. It parsed either way, but the `grep` commands in the runbook only match the compact form, so the test log now matches what Cowrie really writes.
+
+**Not done, and worth knowing.** The rule thresholds are first guesses from one day of traffic. Tunnelling requests (`cowrie.direct-tcpip.request`), where a visitor uses the honeypot as a relay, are counted but not yet turned into events. Locations are not added to honeypot events, since that needs a GeoIP database. A record longer than 64 KiB is cut short and lands in the dead-letter table.
+
+---
+
 ## 2026-10-13: Local dashboard (stage 7)
 
 **Summary.** The API now serves a dashboard: overview, alerts with their evidence and a decision workflow, event search, and a copyable command list. It was checked in a real browser against live data, including the real honeypot.

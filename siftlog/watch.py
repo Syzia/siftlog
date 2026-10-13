@@ -32,7 +32,7 @@ from siftlog.engine.stream import ReorderBuffer, StreamingEngine
 from siftlog.enrich import GeoResolver, enrich
 from siftlog.events import DeadLetter, Event
 from siftlog.ingest.tail import TailReader
-from siftlog.parsers import PARSERS
+from siftlog.parsers import PARSERS, ParserConfigError, build_parser
 from siftlog.store import EventStore, SyncReport
 
 
@@ -169,9 +169,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--db", default="siftlog.db")
     parser.add_argument("--rules", default="rules", help="rule file or directory")
     parser.add_argument("--source", choices=sorted(PARSERS), default="sshd")
-    parser.add_argument("--year", type=int, required=True,
-                        help="year of each file's first line (syslog timestamps have none); "
+    parser.add_argument("--year", type=int,
+                        help="year of each file's first line (required for sshd: syslog timestamps have none); "
                              "a file already being followed resumes with the year it had reached")
+    parser.add_argument("--ignore-ip", action="append", default=[], metavar="ADDRESS",
+                        help="leave out lines from this address or network, such as your own; repeat for several")
     parser.add_argument("--tz", default="UTC", help="timezone the host logged in, e.g. Europe/London")
     parser.add_argument("--poll", type=float, default=1.0, help="seconds between checks for new lines")
     parser.add_argument("--lateness", type=float, default=2.0,
@@ -192,8 +194,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             tz = ZoneInfo(args.tz)
         except Exception as exc:
             parser.error(f"cannot use timezone {args.tz!r}: {exc}")
+    def fresh_parser() -> Any:
+        return build_parser(args.source, year=args.year, tz=tz, ignore_ips=args.ignore_ip)
+
     resolver: Optional[GeoResolver] = None
     try:
+        fresh_parser()  # fail on bad options before touching the database
         rules = load_rules(args.rules)
         if args.simulated_geo:
             from siftlog.enrich import TableGeoResolver
@@ -204,7 +210,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             from siftlog.enrich import open_maxmind
 
             resolver = open_maxmind(args.geoip)
-    except (RuleError, RuntimeError, OSError) as exc:
+    except (ParserConfigError, RuleError, RuntimeError, OSError) as exc:
         parser.error(str(exc))
 
     def stop(signum: int, frame: Any) -> None:
@@ -219,8 +225,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     with EventStore(args.db) as store:
         watcher = Watcher(
-            args.files, store, rules, lambda: PARSERS[args.source](year=args.year, tz=tz),
-            lateness=args.lateness, resolver=resolver,
+            args.files, store, rules, fresh_parser, lateness=args.lateness, resolver=resolver,
         )  # fmt: skip
         synced = watcher.start()
         print(

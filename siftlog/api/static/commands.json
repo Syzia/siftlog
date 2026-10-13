@@ -86,12 +86,36 @@
           "where": "mac",
           "command": "ssh -i {{honeypot_key}} -p {{honeypot_port}} -t {{honeypot_user}}@{{honeypot_host}} 'tail -f {{honeypot_dir}}/var/log/cowrie/cowrie.log'",
           "note": "Any address that is not yours is a real visitor. Ctrl+C stops watching and disconnects."
-        },
+        }
+      ]
+    },
+    {
+      "title": "Honeypot data, step by step",
+      "about": "Real attack traffic goes in its own database, data/honeypot.db, apart from the practice data. The copied logs and the data folder both stay out of git.",
+      "commands": [
         {
-          "title": "Copy the honeypot's logs to this Mac",
+          "title": "1. Copy the honeypot's logs to this Mac",
           "where": "mac",
           "command": "mkdir -p {{honeypot_logs}} && rsync -av -e \"ssh -i {{honeypot_key}} -p {{honeypot_port}}\" {{honeypot_user}}@{{honeypot_host}}:{{honeypot_dir}}/var/log/cowrie/ {{honeypot_logs}}/",
-          "note": "Copies into a folder outside the repo. Never copy anything from the downloads folder: that is live malware."
+          "note": "Asks for your key passphrase. Copies into a folder outside the repo, and only adds what is new, so run it whenever you want fresh data. Never copy anything from the downloads folder: that is live malware."
+        },
+        {
+          "title": "2. Parse the logs into the honeypot database",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.ingest {{honeypot_logs}}/cowrie.json* --source cowrie --db data/honeypot.db --show-ignored{{ignore_own}}",
+          "note": "Safe to repeat after every copy: lines already stored are skipped. The list it prints shows what Cowrie logged that Siftlog does not turn into events. To leave out your own test logins, put your address in own_addresses in siftlog.local.json."
+        },
+        {
+          "title": "3. Run the rules and save the alerts",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.engine --db data/honeypot.db --rules {{rules}} --save",
+          "note": "Only the three honeypot rules can fire here. The ssh rules read real sshd logs."
+        },
+        {
+          "title": "4. Open the dashboard on the honeypot data",
+          "where": "mac",
+          "command": "cd \"{{project_dir}}\" && .venv/bin/python -m siftlog.api --db data/honeypot.db --rules {{rules}} --port 8010 --open",
+          "note": "Uses its own port, so it can run alongside a dashboard that is showing the practice data."
         }
       ]
     },

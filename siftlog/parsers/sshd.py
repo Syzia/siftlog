@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import datetime, timezone, tzinfo
 from typing import Dict, Mapping, Optional
 
 from siftlog.events import (
@@ -28,6 +28,7 @@ from siftlog.events import (
     ParseResult,
     make_event_id,
 )
+from siftlog.parsers.timestamps import iso_to_utc
 
 SOURCE = "sshd"
 
@@ -122,6 +123,7 @@ class SshdParser:
     """
 
     source = SOURCE
+    needs_year = True
 
     def __init__(self, year: int, tz: tzinfo = timezone.utc) -> None:
         self._year = year
@@ -146,7 +148,10 @@ class SshdParser:
         if match is None:
             return _dead(raw, source_id, offset, "unrecognised log envelope")
         try:
-            timestamp = self._timestamp(match) if syslog else _iso_timestamp(match)
+            if syslog:
+                timestamp = self._timestamp(match)
+            else:
+                timestamp = iso_to_utc(match.group("dt"), match.group("frac"), match.group("tz"))
         except ValueError as exc:
             return _dead(raw, source_id, offset, f"invalid timestamp: {exc}")
 
@@ -217,21 +222,6 @@ class SshdParser:
         # (strptime without a year would reject it).
         naive = datetime(self._year, month, int(match.group("day")), hour, minute, second)
         return naive.replace(tzinfo=self._tz).astimezone(timezone.utc)
-
-
-def _iso_timestamp(match: "re.Match[str]") -> datetime:
-    base = datetime.strptime(match.group("dt"), "%Y-%m-%dT%H:%M:%S")
-    fraction = match.group("frac")
-    microsecond = int((fraction[1:] + "000000")[:6]) if fraction else 0
-    zone = match.group("tz")
-    if zone == "Z":
-        offset = timedelta(0)
-    else:
-        digits = zone[1:].replace(":", "")
-        offset = timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
-        if zone[0] == "-":
-            offset = -offset
-    return base.replace(microsecond=microsecond, tzinfo=timezone(offset)).astimezone(timezone.utc)
 
 
 def _dead(raw: str, source_id: str, offset: int, reason: str) -> ParseResult:

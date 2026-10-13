@@ -128,14 +128,48 @@ Any address that is not yours is a real visitor. Ctrl+C stops watching and disco
 ssh -i ~/.ssh/honeypot_ed25519 -p 22222 -t root@<HONEYPOT_IP> 'tail -f /home/cowrie/my-honeypot/var/log/cowrie/cowrie.log'
 ```
 
-### Copy the honeypot's logs to this Mac
+## Honeypot data, step by step
+
+Real attack traffic goes in its own database, data/honeypot.db, apart from the practice data. The copied logs and the data folder both stay out of git.
+
+### 1. Copy the honeypot's logs to this Mac
 
 *On your Mac.*
 
-Copies into a folder outside the repo. Never copy anything from the downloads folder: that is live malware.
+Asks for your key passphrase. Copies into a folder outside the repo, and only adds what is new, so run it whenever you want fresh data. Never copy anything from the downloads folder: that is live malware.
 
 ```bash
 mkdir -p ~/honeypot-logs && rsync -av -e "ssh -i ~/.ssh/honeypot_ed25519 -p 22222" root@<HONEYPOT_IP>:/home/cowrie/my-honeypot/var/log/cowrie/ ~/honeypot-logs/
+```
+
+### 2. Parse the logs into the honeypot database
+
+*On your Mac.*
+
+Safe to repeat after every copy: lines already stored are skipped. The list it prints shows what Cowrie logged that Siftlog does not turn into events. To leave out your own test logins, put your address in own_addresses in siftlog.local.json.
+
+```bash
+cd "<path to the siftlog folder>" && .venv/bin/python -m siftlog.ingest ~/honeypot-logs/cowrie.json* --source cowrie --db data/honeypot.db --show-ignored
+```
+
+### 3. Run the rules and save the alerts
+
+*On your Mac.*
+
+Only the three honeypot rules can fire here. The ssh rules read real sshd logs.
+
+```bash
+cd "<path to the siftlog folder>" && .venv/bin/python -m siftlog.engine --db data/honeypot.db --rules rules --save
+```
+
+### 4. Open the dashboard on the honeypot data
+
+*On your Mac.*
+
+Uses its own port, so it can run alongside a dashboard that is showing the practice data.
+
+```bash
+cd "<path to the siftlog folder>" && .venv/bin/python -m siftlog.api --db data/honeypot.db --rules rules --port 8010 --open
 ```
 
 ## Honeypot: after logging in

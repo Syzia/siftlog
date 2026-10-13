@@ -1,0 +1,17 @@
+id: honeypot-shell-commands
+title: Commands run on the honeypot
+description: >
+  A visitor got past the login and typed commands. Most visitors to a honeypot
+  only test a password and leave, so the ones that go on to run something are
+  the sessions worth reading. One alert per address covers the whole visit.
+  Reads honeypot (Cowrie) events only.
+severity: medium
+type: event_count
+filter:
+  source: cowrie
+  event_type: command
+group_by: [src_ip]
+timespan: 30m
+condition:
+  gte: 1
+mitre: [T1059.004]

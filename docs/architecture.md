@@ -79,6 +79,16 @@ Things that will bite you in the parsers:
 
 Unparseable lines go to a dead-letter table instead of being dropped. Parsers are where real-world messiness lives, so this makes failures visible.
 
+As built (stage 8), the Cowrie honeypot parser:
+- **Three more event types**, `connection`, `command` and `file_transfer`, for what a visitor does besides logging in. Only a honeypot produces them. Source-specific detail (the command, the password tried, the file's name, URL and hash, Cowrie's session id) goes in `extra`.
+- **Most of what Cowrie logs is ignored, with a reason.** It writes many event types, and session bookkeeping and client fingerprints are not attacker actions. Each ignored line is counted under its `eventid`, and `--show-ignored` prints the counts, so the decision about what to keep can be revisited with numbers. An `eventid` Cowrie adds in a future version is ignored the same way, not treated as an error.
+- **A dead letter means "Cowrie would not have written this"**: not JSON, no event id, no usable timestamp, or no source address on an event that needs one.
+- **`cowrie.command.failed` is ignored on purpose.** Cowrie logs `command.input` for every line typed and then `command.failed` if the command was not found. Counting both would double it.
+- **The injection risk is different from sshd's.** In free text a username can impersonate the rest of the line. In JSON it cannot, so the care goes into types instead: a field that is not a string is treated as absent, the source address must be an address *in a string* (`ip_address(5)` is valid Python), and attacker-typed values are cut to 4,096 characters in structured fields while `raw` keeps the whole line.
+- **No year is needed.** Cowrie timestamps are complete, so `--year` is required only for sources that need it. A parser declares which with `needs_year`.
+- **Your own visits can be left out.** `--ignore-ip` drops lines from the addresses you name, counted as ignored (`own-address`). It is done at ingest, so those events are never stored. Adding an address later means rebuilding the database.
+- **Known gap:** a record longer than the 64 KiB line cap is cut short, stops being valid JSON, and becomes a dead letter. A very long pasted command is exactly the kind of record this could lose as an event. It is still kept, truncated, in the dead-letter table.
+
 ### 4. Enrichment (optional step in the normalizer)
 GeoIP lookup via the offline MaxMind GeoLite2 database (no API calls, no rate limits). Required for impossible-travel detection.
 - Needs a free MaxMind account and licence key, and the database can't be redistributed. Keep it out of the repo and document how to fetch it.
@@ -272,6 +282,8 @@ Stage 0 runs in parallel with everything else. Stage 5 is the MVP: write the REA
 | 6 | Streaming mode + tail ingestor | Append to a log file, alert appears in seconds |
 | 7 | React dashboard (optional) | Demo GIF for the README |
 | 8 | Real data (Cowrie output + own server) + web log parser | Run against live logs, tune false positives, add the findings to the README |
+
+As built, stage 8 is the Cowrie parser, three honeypot rules and the own-address filter. The web log parser was left out because the honeypot is SSH-only, so there is no real web data to build one against. The rules were written from the shape of the first day's traffic and have not been tuned against a longer run.
 | 9 (stretch) | Sigma rule import | Load a public Sigma rule and have it fire |
 
 Stage 3 is the milestone that matters. A deterministic precision/recall test against *labelled* simulated attacks, including noisy benign traffic and a documented low-and-slow miss, is the strongest thing you can show in an interview.

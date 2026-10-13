@@ -93,6 +93,19 @@ class Rule:
     def matches(self, event: Event) -> bool:
         return _passes(event, self.filter)
 
+    def reads(self, source: str) -> bool:
+        """Could an event from ``source`` ever count towards this rule?
+
+        False only when the rule's filter names other sources. Used to leave rules
+        out of a score they cannot take part in, such as honeypot rules when the
+        labelled data is all sshd.
+        """
+
+        def accepts(rule_filter: Filter) -> bool:
+            return "source" not in rule_filter or source in rule_filter["source"]
+
+        return accepts(self.filter) and (not self.steps or any(accepts(step.filter) for step in self.steps))
+
     def group_key(self, event: Event) -> Optional[str]:
         """The value(s) this event is grouped under, or None if it lacks one."""
         parts = [getattr(event, name) for name in self.group_by]

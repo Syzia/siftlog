@@ -2,7 +2,9 @@
 
 How well the shipped rules detect the simulated attacks, measured rather than asserted.
 
-**Read this first:** these numbers come from *simulated* traffic, and the thresholds were chosen by someone who had seen the simulator. High scores are therefore expected, and are not evidence about real attackers. The informative parts are the two things the rules are known to get wrong, the definition of a false alert, and the sweeps further down that show where each rule breaks. Real data arrives at stage 8.
+**Read this first:** these numbers come from *simulated* traffic, and the thresholds were chosen by someone who had seen the simulator. High scores are therefore expected, and are not evidence about real attackers. The informative parts are the two things the rules are known to get wrong, the definition of a false alert, and the sweeps further down that show where each rule breaks.
+
+Only the five `ssh-*` rules are measured here. The three `honeypot-*` rules read honeypot events, which the simulator does not produce, so they are left out of every table rather than shown as rows of zeros. They have tests, but no precision or recall figures: a honeypot log has no ground truth to score against.
 
 ## How it is measured
 
@@ -120,7 +122,7 @@ No speed separates the VPN user from the thief, because both are teleporting. Fi
 - **Low-and-slow** attacks are missed at these thresholds. Catching them needs a longer window or a different signal, not a lower threshold: the brute-force sweep shows what lowering it does.
 - **Address rotation.** An attacker spreading a brute force across many addresses stays under the per-address rule. The stuffing rule covers the many-addresses-one-host shape, but only above 15 sources in ten minutes.
 - **Locations are only as good as GeoIP**, and events with no location are invisible to the travel rule.
-- **Simulated data only.** The simulator's traffic is cleaner and more regular than real logs. Expect these numbers to drop on the honeypot data.
+- **Simulated data only.** The simulator's traffic is cleaner and more regular than real logs. Expect these numbers to drop on a real server's logs. The honeypot cannot stand in for one: it accepts nearly every login, so its data has almost no failures for these rules to count.
 
 ## Reproduce
 
