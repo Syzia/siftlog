@@ -47,11 +47,11 @@ The first three hours of the honeypot's log (2026-10-13), run through the same p
 | ...that logged in | 9 |
 | ...that ran a command | 7 |
 | ...that put a file on the honeypot | 3 |
-| Alerts raised | 11, on 7 addresses |
+| Alerts raised | 10, on 4 addresses |
 
-- **The three high-severity alerts were all worth reading:** a program uploaded under the name `sshd` and started in the background, the `.ssh` folder deleted and recreated holding only the attacker's key, and a script that writes and runs a small file to test whether it is on a honeypot.
+- **Three visitors did something, and each is named for it:** a program uploaded under the name `sshd` and started in the background, the `.ssh` folder deleted and recreated holding only the attacker's key, and a script that writes and runs a small file to test whether it is on a honeypot.
 - **One address produced 91% of the events:** 500 logins in 76 minutes, across 441 usernames, each followed by one `uname`. That became two alerts, not a thousand.
-- **The commands rule is too coarse.** Four of its seven alerts were for a lone `uname`. It cannot tell that from the malware install, because rules cannot yet match on the text of a command.
+- **The first rule set was noisier: 11 alerts on 7 addresses, four of them for a lone `uname`.** No threshold separates that from a one-command malware launch, so the rule language was extended to read the text of a command. The login checks are now left out, and planting a key or launching a file has its own alert.
 
 There is no precision or recall here: a honeypot log has no ground truth to score against. What real data did was correct three assumptions, recorded in [docs/devlog.md](docs/devlog.md).
 
@@ -173,6 +173,30 @@ condition:
 mitre: [T1110.003]
 ```
 
+A filter can also look inside text and leave events out. This is the rule that ignores the one-line login checks bots run, and another that looks for a phrase:
+
+```yaml
+filter:
+  source: cowrie
+  event_type: command
+exclude:
+  extra.input:               # exact match: "uname -a; wget ..." is still counted
+    - uname -a
+    - uname -s -v -n -r -m
+```
+
+```yaml
+filter:
+  source: cowrie
+  event_type: command
+  extra.input|contains:      # any one of these, ignoring case
+    - chmod +x
+    - "nohup "
+```
+
+- **Text tests** are `contains`, `startswith` and `endswith`, written after the field name, with `|all` to require every value. The syntax and meaning are Sigma's. There are no regular expressions: the text was typed by an attacker, and a regex can be stalled by crafted input.
+- **`extra.<name>`** reaches detail that only some sources have, such as the command typed on a honeypot (`extra.input`).
+- **`exclude`** takes the same syntax, as one block or a list of blocks. An event matching every line of any block is not counted.
 - **`event_count`** fires on N matching events in the window; **`value_count`** on N *distinct values* of one field.
 - **`temporal_ordered`** fires when a list of `steps` is satisfied in order, such as five failures and then a success. **`impossible_travel`** fires when two located logins for one user are too far apart for the time between them. See [`rules/`](rules/) for an example of each.
 - **A rule names the source it reads.** The `ssh-*` rules read `sshd` events and the `honeypot-*` rules read `cowrie` events. They are kept apart on purpose: on a honeypot nearly every login succeeds and every visitor is hostile, so a rule tuned for a real server would either stay silent or fire on everything.
@@ -182,7 +206,7 @@ mitre: [T1110.003]
 
 ## Threat model
 
-**Detects:** SSH brute force, password spraying, credential stuffing, a password guess that succeeded, and logins from impossibly distant places. On honeypot data: files brought onto the honeypot, commands run on it, and one address trying many accounts.
+**Detects:** SSH brute force, password spraying, credential stuffing, a password guess that succeeded, and logins from impossibly distant places. On honeypot data: files brought onto the honeypot, an SSH key planted, a file made executable or left running, other commands run, and one address trying many accounts.
 
 **Does not cover:**
 
@@ -196,7 +220,7 @@ mitre: [T1110.003]
 
 - **Parsing.** Patterns are anchored at the end of the line, so a username that looks like log syntax cannot spoof the source address. Honeypot records are JSON, read with the standard decoder: field types are checked, attacker-typed values are length-bounded, and nothing is taken from a field it does not belong to. Log content is never evaluated or passed to a shell. Lines are capped at 64 KiB, invalid UTF-8 is tolerated, and lines that do not parse are kept as dead letters instead of dropped.
 - **Storage.** Every query is parameterised, and column names never come from input.
-- **Rules.** Loaded with `yaml.safe_load`, so a rule file cannot construct Python objects.
+- **Rules.** Loaded with `yaml.safe_load`, so a rule file cannot construct Python objects. Text tests are substring comparisons, never regular expressions, so attacker-typed text cannot stall the engine.
 - **Engine.** Evidence is capped per alert, idle state is dropped, and each rule tracks a capped number of groups, forgetting the least recently active first. One attacker cycling through usernames cannot grow memory without bound.
 - **API.** A bearer token on every route but `/health`, compared in constant time. It listens on this machine only by default and refuses to listen elsewhere with a generated token. Parameters are typed and bounded. Responses are JSON only.
 - **Dashboard.** Log content is only ever inserted into the page as text, never as markup. A strict content security policy backs that up: no inline script, nothing from another origin, no framing. The honeypot check only ever connects to the address in your local settings file, and only when you click.
@@ -217,7 +241,8 @@ mitre: [T1110.003]
 | 6 | Live detection: streaming engine + log follower | done |
 | 7 | Local dashboard (plain HTML and JavaScript, no build step) | done |
 | 8 | Honeypot data: Cowrie parser, three honeypot rules, own-address filter | done |
-| 9 | Sigma rule import (stretch) | not started |
+| 9 | Rules that read text and exclude events (Sigma's modifier syntax); two more honeypot rules | done |
+| 10 | Sigma rule file import (stretch) | not started |
 
 The original plan also had a web log parser in stage 8. It was left out: the honeypot is SSH-only, so there is no real web data to build it against.
 

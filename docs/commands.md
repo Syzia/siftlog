@@ -156,7 +156,7 @@ cd "<path to the siftlog folder>" && .venv/bin/python -m siftlog.ingest ~/honeyp
 
 *On your Mac.*
 
-Only the three honeypot rules can fire here. The ssh rules read real sshd logs.
+Only the honeypot rules can fire here. The ssh rules read real sshd logs. Run it again after changing a rule: decisions you have recorded on alerts are kept.
 
 ```bash
 cd "<path to the siftlog folder>" && .venv/bin/python -m siftlog.engine --db data/honeypot.db --rules rules --save

@@ -1,0 +1,21 @@
+id: honeypot-payload-launch
+title: File made executable or left running on the honeypot
+description: >
+  A command that marks a file as a program (chmod +x) or starts one so that
+  it survives the end of the session (nohup). Either is a visitor getting
+  ready to run something they brought or wrote. The two phrases are the ones
+  real traffic has shown so far; expect to add more. Reads honeypot (Cowrie)
+  events only.
+severity: high
+type: event_count
+filter:
+  source: cowrie
+  event_type: command
+  extra.input|contains:
+    - chmod +x
+    - "nohup "
+group_by: [src_ip]
+timespan: 1h
+condition:
+  gte: 1
+mitre: [T1222.002, T1059.004]

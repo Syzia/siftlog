@@ -39,9 +39,13 @@ EXPECTED_ALERTS = [
     ("honeypot-file-transfer", "198.51.100.150", 1, None),  # an SSH key written into authorized_keys
     ("honeypot-file-transfer", "198.51.100.77", 2, None),  # one download that worked, one that failed
     ("honeypot-file-transfer", "203.0.113.45", 1, None),  # the SFTP upload
+    ("honeypot-payload-launch", "198.51.100.77", 1, None),  # "wget ...; chmod +x /tmp/.x"
     ("honeypot-shell-commands", "198.51.100.150", 1, None),
-    ("honeypot-shell-commands", "198.51.100.77", 7, None),
+    ("honeypot-shell-commands", "198.51.100.77", 6, None),  # seven typed, less the "uname -a" probe
+    ("honeypot-ssh-key-planted", "198.51.100.150", 1, None),
 ]
+HONEYPOT_RULES = ["honeypot-credential-sweep", "honeypot-file-transfer", "honeypot-payload-launch",
+                  "honeypot-shell-commands", "honeypot-ssh-key-planted"]  # fmt: skip
 
 
 def run(cli, *args):
@@ -166,7 +170,8 @@ class DetectionTests(HoneypotTestCase):
         alerts = self.alerts()
         self.assertEqual(summary(alerts), EXPECTED_ALERTS)
         self.assertEqual({a.rule_id: a.severity for a in alerts}, {
-            "honeypot-file-transfer": "high", "honeypot-shell-commands": "medium", "honeypot-credential-sweep": "low",
+            "honeypot-file-transfer": "high", "honeypot-ssh-key-planted": "high", "honeypot-payload-launch": "high",
+            "honeypot-shell-commands": "medium", "honeypot-credential-sweep": "low",
         })  # fmt: skip
 
     def test_each_alert_points_at_the_events_behind_it(self):
@@ -177,8 +182,9 @@ class DetectionTests(HoneypotTestCase):
             commands = next(a for a in alerts if (a.rule_id, a.group_key) == ("honeypot-shell-commands", "198.51.100.77"))
             evidence = store.alert_events(commands.id)
         self.assertEqual({e.event_type for e in evidence}, {COMMAND})
-        self.assertEqual([e.extra["input"] for e in evidence][:2], ["uname -a", "cat /proc/cpuinfo | grep name | wc -l"])
+        self.assertEqual([e.extra["input"] for e in evidence][:2], ["cat /proc/cpuinfo | grep name | wc -l", "nproc; free -m"])
         self.assertEqual(evidence[-1].extra["input"], "exit")
+        self.assertNotIn("uname -a", [e.extra["input"] for e in evidence])  # the probe is not part of the evidence
 
     def test_a_scanner_that_only_connects_raises_nothing(self):
         self.ingest()
@@ -200,8 +206,7 @@ class DetectionTests(HoneypotTestCase):
         fired = {a.rule_id for a in ReplayEngine(self.rules).run(dataset.events)}
         self.assertTrue(fired)
         self.assertFalse({rule_id for rule_id in fired if rule_id.startswith("honeypot-")})
-        self.assertEqual(sorted(r.id for r in self.rules if r not in scored_rules(self.rules)),
-                         ["honeypot-credential-sweep", "honeypot-file-transfer", "honeypot-shell-commands"])
+        self.assertEqual(sorted(r.id for r in self.rules if r not in scored_rules(self.rules)), HONEYPOT_RULES)
 
     def test_one_visit_is_one_alert_and_a_return_visit_is_another(self):
         later = lambda line: line.replace("T10:", "T16:")  # noqa: E731
@@ -220,12 +225,46 @@ class DetectionTests(HoneypotTestCase):
             ("honeypot-shell-commands", "198.51.100.200", 1, None), ("honeypot-shell-commands", "198.51.100.200", 4, None),
         ])  # fmt: skip
 
+    def visit(self, *commands):
+        """One address logs in and types ``commands``. Returns the alerts as (rule, events)."""
+        log = os.path.join(self.dir, "visit.json")
+        with open(log, "w") as fh:
+            fh.write(cowrie_line(0, "cowrie.login.success"))
+            fh.writelines(cowrie_line(5 + n, "cowrie.command.input", input=text) for n, text in enumerate(commands))
+        if os.path.exists(self.db):
+            os.remove(self.db)
+        self.ingest(log)
+        return sorted((a.rule_id.replace("honeypot-", ""), a.event_count) for a in self.alerts())
+
+    def test_a_login_check_is_not_news(self):
+        # What real traffic showed: most addresses that log in run one uname and leave.
+        self.assertEqual(self.visit("uname -a"), [])
+        self.assertEqual(self.visit("uname -s -v -n -r -m"), [])
+        self.assertEqual(self.visit("uname -a", "uname -a", "uname -a"), [])
+
+    def test_a_probe_with_anything_added_is_news_again(self):
+        # Exact match on purpose. "Starts with uname" would let an attacker hide behind it.
+        self.assertEqual(self.visit("uname -a; cd /tmp"), [("shell-commands", 1)])
+        self.assertEqual(self.visit("uname -a ", "UNAME -A", "uname"), [("shell-commands", 3)])
+        self.assertEqual(self.visit("uname -a", "ls"), [("shell-commands", 1)])  # the probe is not counted, the rest is
+
+    def test_planting_a_key_and_launching_a_payload_are_named(self):
+        key = 'cd ~ && mkdir .ssh && echo "ssh-ed25519 AAAAfixture" >> .ssh/Authorized_Keys'
+        self.assertEqual(self.visit(key), [("shell-commands", 1), ("ssh-key-planted", 1)])
+        self.assertEqual(self.visit("chmod +x ./x;nohup ./x &"), [("payload-launch", 1), ("shell-commands", 1)])
+        self.assertEqual(self.visit("CHMOD +X ./x"), [("payload-launch", 1), ("shell-commands", 1)])
+        self.assertEqual(self.visit("nohup ./x &"), [("payload-launch", 1), ("shell-commands", 1)])
+        # Near misses: a different chmod, and "nohup" inside another word.
+        self.assertEqual(self.visit("chmod -R go= ~/.ssh", "cat nohup.out"), [("shell-commands", 2)])
+        # Reading the file counts as touching it. The rule says so.
+        self.assertEqual(self.visit("cat ~/.ssh/authorized_keys"), [("shell-commands", 1), ("ssh-key-planted", 1)])
+
     def test_engine_command_saves_alerts_the_api_can_serve(self):
         run(ingest_cli, FIXTURE, "--source", "cowrie", "--db", self.db)
         out, err, code = run(engine_cli, "--db", self.db, "--rules", RULES_DIR, "--save")
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("6 alert(s) from 8 rule(s)", out)
-        self.assertIn("saved: 6 new", out)
+        self.assertIn("8 alert(s) from 10 rule(s)", out)
+        self.assertIn("saved: 8 new", out)
 
         client = TestClient(create_app(self.db, self.rules, TOKEN))
         alerts = client.get("/alerts", headers=AUTH).json()["alerts"]
@@ -288,13 +327,13 @@ class WatchTests(HoneypotTestCase):
     def test_watch_command_needs_no_year_for_cowrie(self):
         out, err, code = run(watch_cli, FIXTURE, "--source", "cowrie", "--db", self.db, "--rules", RULES_DIR, "--once")
         self.assertEqual((code, err), (0, ""))
-        self.assertIn("caught up: 35 events stored, 6 alert(s) (6 new, 0 updated, 0 reopened)", out)
+        self.assertIn("caught up: 35 events stored, 8 alert(s) (8 new, 0 updated, 0 reopened)", out)
 
         mine = self.db + ".mine"
         out, _, code = run(watch_cli, FIXTURE, "--source", "cowrie", "--db", mine, "--rules", RULES_DIR, "--once",
                            "--ignore-ip", "198.51.100.77")  # fmt: skip
         self.assertEqual(code, 0)
-        self.assertIn("caught up: 22 events stored, 4 alert(s)", out)
+        self.assertIn("caught up: 22 events stored, 5 alert(s)", out)
 
         _, err, code = run(watch_cli, FIXTURE, "--db", self.db + ".other", "--rules", RULES_DIR, "--once")
         self.assertEqual(code, 2)

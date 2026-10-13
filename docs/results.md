@@ -4,7 +4,7 @@ How well the shipped rules detect the simulated attacks, measured rather than as
 
 **Read this first:** these numbers come from *simulated* traffic, and the thresholds were chosen by someone who had seen the simulator. High scores are therefore expected, and are not evidence about real attackers. The informative parts are the two things the rules are known to get wrong, the definition of a false alert, and the sweeps further down that show where each rule breaks.
 
-Only the five `ssh-*` rules are measured here. The three `honeypot-*` rules read honeypot events, which the simulator does not produce, so they are left out of every table rather than shown as rows of zeros. They have tests, but no precision or recall figures: a honeypot log has no ground truth to score against.
+Only the five `ssh-*` rules are measured here. The five `honeypot-*` rules read honeypot events, which the simulator does not produce, so they are left out of every table rather than shown as rows of zeros. They have tests, but no precision or recall figures: a honeypot log has no ground truth to score against.
 
 ## How it is measured
 

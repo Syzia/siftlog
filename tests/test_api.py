@@ -307,6 +307,7 @@ class StatsAndRulesTests(ApiTestCase):
             "ssh-password-spray": 1, "ssh-success-after-failures": 1,
             # Loaded and listed, but this data is all sshd, so they have nothing to say.
             "honeypot-credential-sweep": 0, "honeypot-file-transfer": 0, "honeypot-shell-commands": 0,
+            "honeypot-ssh-key-planted": 0, "honeypot-payload-launch": 0,
         })  # fmt: skip
         brute = rules["ssh-brute-force"]
         self.assertEqual((brute["type"], brute["group_by"], brute["timespan_seconds"], brute["mitre"]),

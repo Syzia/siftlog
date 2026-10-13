@@ -1,0 +1,19 @@
+id: honeypot-ssh-key-planted
+title: SSH key planted on the honeypot
+description: >
+  A command that touches authorized_keys. Adding a key there is how an
+  intruder keeps access after the password they guessed is changed, so on a
+  real server this would be the most urgent thing on the list. Matches the
+  text of the command, in any letter case. Reads honeypot (Cowrie) events
+  only.
+severity: high
+type: event_count
+filter:
+  source: cowrie
+  event_type: command
+  extra.input|contains: authorized_keys
+group_by: [src_ip]
+timespan: 1h
+condition:
+  gte: 1
+mitre: [T1098.004]

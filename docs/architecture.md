@@ -193,6 +193,15 @@ As built (stage 6, live detection):
 - **Starting up rebuilds from the whole store**, then reconciles the alert table as a full replay would. A restart mid-attack therefore continues the same alert, with the same id and any analyst decision intact, and repairs whatever was missed while the process was down. The cost is one pass over every stored event at startup, which is fine at SQLite scale and is the first thing to change beyond it.
 - **State is capped.** Each rule tracks at most 200,000 groups and forgets the least recently active first; an evicted group's open alert is closed, not lost. The cap is a trade-off (an attacker pushed out mid-count is forgotten), and the engine counts evictions so it is visible.
 - **The log follower** (`siftlog/ingest/tail.py`) behaves like `tail -F`: it waits for a half-written line, reads a renamed file to its end before moving to the new one, and treats truncation or an in-place rewrite as a new stream. Its offsets and stream identities match the batch reader's, so a line gets the same event id either way.
+As built (stage 9, rules that read text):
+- **A filter can look inside text.** `extra.input|contains: [wget, curl]` uses Sigma's modifier syntax and meaning: `contains`, `startswith`, `endswith`, and `|all` to require every value instead of any one. They ignore case, as Sigma's do. Plain equality stays exact.
+- **A filter can reach source-specific detail** as `extra.<name>`. That is what lets a rule see the command a honeypot visitor typed. Extra fields can be filtered on but not grouped or counted by: nothing has needed it yet.
+- **`exclude` removes events** with the same syntax. One block, or a list of blocks; an event matching every line of any block is not counted. It is how the commands rule ignores login-check probes.
+- **No regular expressions, deliberately.** The text being tested was typed by an attacker, and a backtracking regex engine can be made to run for a very long time by the right input. Substring tests take time proportional to the text. The cost is expressiveness, and Sigma's `|re` rules will not import.
+- **Probes are excluded by exact match.** `uname -a` is ignored; `uname -a; wget ...` is not. A prefix match would have let an attacker hide a command behind a probe.
+- **Plain equality on event fields is still a dictionary lookup**, stored apart from the new conditions, so the existing rules run exactly as before and the published results did not move.
+- **Overlap is accepted.** A visit that plants a key raises the key alert, the file alert and the catch-all commands alert. One alert per rule per visit still holds; one alert per visit does not, and was never the contract.
+
 - **Checkpoints** (schema version 3) record how far each stream has been read, plus the parser's year, so a restart neither re-reads nor forgets that the log has passed New Year. A file rotated in continues the year the old one had reached.
 - **A stop signal is handled like Ctrl+C**, so events still in the ordering buffer are evaluated before the process exits.
 - **Known limits.** Ties between two different files within the same second can be ordered differently from a replay. A new stream whose first line is identical to an old one's is treated as that stream.
@@ -285,8 +294,10 @@ Stage 0 runs in parallel with everything else. Stage 5 is the MVP: write the REA
 | 7 | React dashboard (optional) | Demo GIF for the README |
 | 8 | Real data (Cowrie output + own server) + web log parser | Run against live logs, tune false positives, add the findings to the README |
 
-As built, stage 8 is the Cowrie parser, three honeypot rules and the own-address filter. The web log parser was left out because the honeypot is SSH-only, so there is no real web data to build one against. The rules were written from the shape of the first day's traffic and have not been tuned against a longer run.
+As built, stage 8 is the Cowrie parser, three honeypot rules (five after stage 9) and the own-address filter. The web log parser was left out because the honeypot is SSH-only, so there is no real web data to build one against. The rules were written from the shape of the first day's traffic and have not been tuned against a longer run.
 | 9 (stretch) | Sigma rule import | Load a public Sigma rule and have it fire |
+
+As built, stage 9 became the part of Sigma that real data asked for first: filters that test text and source-specific fields, and `exclude`. Importing Sigma rule files is still not done, and is now mostly a matter of mapping field names.
 
 Stage 3 is the milestone that matters. A deterministic precision/recall test against *labelled* simulated attacks, including noisy benign traffic and a documented low-and-slow miss, is the strongest thing you can show in an interview.
 
