@@ -6,6 +6,8 @@ Cowrie steps were checked against docs.cowrie.org on 2026-10-13. Steps marked **
 
 Written for **Debian 12 (bookworm)** or **Ubuntu 24.04 LTS**. Cowrie's docs say their package list was last verified on Debian Bookworm, so prefer it when the plan offers it. The smallest plans (0.5 GB RAM) work with the swap file in step 2; the plan must include a public **IPv4** address, because internet-wide SSH scanning does not happen over IPv6.
 
+**Verified on a real deployment (2026-10-13):** Vultr `vc2-1c-1gb`, Ubuntu 24.04.5, Cowrie 3.1.2. On that image `ufw` is active and allows only 22/tcp, and `ssh.socket` is inactive, so the drop-in port change in step 4 is the one that applies.
+
 Placeholders: `<IP>` is the server's public address, `<MY_IP>` is your current public address, and `22222` is the admin SSH port (any high port works).
 
 ## Ground rules
@@ -131,7 +133,7 @@ apt-get install python3-pip python3-venv libssl-dev libffi-dev build-essential l
 Cowrie refuses to run as root, so create an unprivileged user and switch to it:
 
 ```bash
-adduser --disabled-password cowrie
+adduser --disabled-password --gecos "" cowrie
 ```
 
 ```bash
@@ -173,7 +175,7 @@ Whether or not the login succeeds, it should be logged:
 ls -la /home/cowrie/my-honeypot/var/log/cowrie/
 ```
 
-The Cowrie docs page I read does not name the JSON log file. Expect something like `cowrie.json`, and note what it is actually called here, because the stage 8 parser needs the exact name and path.
+Confirmed on the live box: the directory holds `cowrie.json` (one JSON event per line, what Siftlog will parse) and `cowrie.log` (human-readable text). Downloaded payloads go to `var/lib/cowrie/downloads`.
 
 ## 7. Redirect port 22 to Cowrie (from the Cowrie docs)
 
@@ -183,33 +185,31 @@ iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222
 
 The docs note this does not apply to loopback, so test from another machine (step 9), not from the server.
 
-Make it survive a reboot **(not from Cowrie docs)**:
+This rule lasts until the next reboot. **Do not install `iptables-persistent` to keep it**: on Ubuntu 24.04 that package is marked as conflicting with `ufw`, and apt may remove the host firewall to install it. Persistence is handled in step 10 instead.
+
+## 8. Test from your Mac while port 22 is still restricted to you
+
+The Vultr firewall still only lets `<MY_IP>` reach port 22, so you can be the first "attacker". Run this on your Mac, not the server:
 
 ```bash
-apt-get install iptables-persistent
+ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o PubkeyAuthentication=no root@<IP>
 ```
+
+The options keep Cowrie's host key out of your Mac's `known_hosts` (so the admin port keeps working without warnings) and stop your real keys being offered to the honeypot. Type any password. Cowrie's default accounts accept most passwords for `root`; whether or not you get its fake shell, the attempt is recorded. Type `exit` to leave.
+
+Then, on the server as root, confirm it was captured:
 
 ```bash
-netfilter-persistent save
+tail -n 5 /home/cowrie/my-honeypot/var/log/cowrie/cowrie.json
 ```
 
-## 8. Open port 22 to the world
+You should see `cowrie.session.connect` and `cowrie.login.success` or `cowrie.login.failed` events carrying your IP.
 
-In the Vultr firewall group, change the port 22 rule's source to anywhere (`0.0.0.0/0`). Leave the 22222 rule restricted to `<MY_IP>/32`. Port 2222 never needs to be opened externally.
+## 9. Open port 22 to the world
 
-## 9. Verify from your Mac
+Only after step 8 works: in the Vultr firewall group, change the port 22 rule's source to anywhere (`0.0.0.0/0`). Leave the 22222 rule restricted to `<MY_IP>/32`. Port 2222 never needs to be opened externally.
 
-Your Mac remembers the real server's host key for port 22; Cowrie presents a different one, so clear the old entry first:
-
-```bash
-ssh-keygen -R <IP>
-```
-
-```bash
-ssh root@<IP>
-```
-
-You should land in Cowrie's fake shell (any password may work). Then confirm on the server that the session appears in `var/log/cowrie/`. After that, the box will be found by scanners within hours, and real events start arriving.
+Scanners find a new address within hours, and real events start arriving.
 
 ## 10. Keeping it alive
 
