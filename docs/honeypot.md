@@ -213,7 +213,81 @@ Scanners find a new address within hours, and real events start arriving.
 
 ## 10. Keeping it alive
 
-`cowrie start` survives logging out but **not a reboot**. Cowrie's docs include a "Running using supervisord" section; use it, or write a systemd unit, so the honeypot restarts with the server. The docs also have an "Updating Cowrie" section. Read both before leaving it for weeks.
+`cowrie start` survives logging out but **not a reboot**, and neither does the iptables rule from step 7. Two systemd units fix both **(not from Cowrie docs; verified on the live box, including a reboot)**.
+
+Paste each block whole, as root, one at a time. If a log viewer such as `tail -f` is running, press Ctrl+C first, or the paste is typed into it instead of being run.
+
+```bash
+cat > /etc/systemd/system/cowrie.service <<'EOF'
+[Unit]
+Description=Cowrie SSH honeypot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=cowrie
+Group=cowrie
+WorkingDirectory=/home/cowrie/my-honeypot
+Environment=PATH=/home/cowrie/my-honeypot/cowrie-env/bin:/usr/local/bin:/usr/bin:/bin
+Environment=VIRTUAL_ENV=/home/cowrie/my-honeypot/cowrie-env
+ExecStartPre=/bin/rm -f /home/cowrie/my-honeypot/var/run/cowrie.pid
+ExecStart=/home/cowrie/my-honeypot/cowrie-env/bin/cowrie start
+ExecStop=/home/cowrie/my-honeypot/cowrie-env/bin/cowrie stop
+PIDFile=/home/cowrie/my-honeypot/var/run/cowrie.pid
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+The two `Environment` lines stand in for activating the virtualenv, which `cowrie start` needs in order to find `twistd`. The `rm -f` clears a stale PID file left by an unclean shutdown.
+
+```bash
+cat > /etc/systemd/system/cowrie-redirect.service <<'EOF'
+[Unit]
+Description=Redirect port 22 to Cowrie on port 2222
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -t nat -C PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222 2>/dev/null || iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+The `-C` check means the rule is only added when it is missing, so it is never duplicated.
+
+Stop the hand-started copy, then start and enable both units:
+
+```bash
+su - cowrie -c 'cd ~/my-honeypot && . cowrie-env/bin/activate && cowrie stop'
+```
+
+```bash
+systemctl daemon-reload && systemctl enable --now cowrie-redirect cowrie
+```
+
+Check, then `reboot` and check again after reconnecting on the admin port:
+
+```bash
+systemctl is-active cowrie cowrie-redirect; ss -tln | grep ':2222 '; iptables -t nat -S PREROUTING
+```
+
+You want `active` twice, a `LISTEN` line for 2222, and exactly one `--dport 22 -j REDIRECT --to-ports 2222` rule.
+
+You can also verify from outside without logging in, by reading the SSH banners. The admin port shows the real server (`OpenSSH_9.6p1 Ubuntu`), and port 22 shows Cowrie's fake one (`OpenSSH_9.2p1 Debian`):
+
+```bash
+(sleep 4 | nc -w 8 <IP> 22 | head -c 100)
+```
+
+Cowrie's docs also have an "Updating Cowrie" section. Read it before leaving the box for weeks.
 
 ## 11. Getting logs to Siftlog (stage 8)
 
