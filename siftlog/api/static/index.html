@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Siftlog</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header>
+    <h1>Siftlog</h1>
+    <nav id="tabs" aria-label="Sections">
+      <button type="button" data-tab="overview">Overview</button>
+      <button type="button" data-tab="alerts">Alerts</button>
+      <button type="button" data-tab="events">Events</button>
+      <button type="button" data-tab="commands">Commands</button>
+    </nav>
+    <div class="tools">
+      <label><input type="checkbox" id="auto" checked> Auto-refresh</label>
+      <span id="updated" class="muted"></span>
+      <a href="/docs">API docs</a>
+    </div>
+  </header>
+
+  <p id="error" class="error" role="alert" hidden></p>
+
+  <main>
+    <section id="signin" hidden>
+      <h2>Sign in</h2>
+      <p>This dashboard needs the API token. The terminal where you started the server printed it, along with a link that opens this page already signed in.</p>
+      <form id="signin-form">
+        <label for="token-input">API token</label>
+        <input id="token-input" type="password" autocomplete="off" spellcheck="false">
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="signin-message" class="error" hidden></p>
+    </section>
+
+    <section id="overview" hidden></section>
+
+    <section id="alerts" hidden>
+      <div class="filters" id="alert-filters"></div>
+      <div class="split">
+        <div id="alert-list"></div>
+        <div id="alert-detail"></div>
+      </div>
+    </section>
+
+    <section id="events" hidden>
+      <form class="filters" id="event-filters"></form>
+      <div id="event-results"></div>
+    </section>
+
+    <section id="commands" hidden></section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

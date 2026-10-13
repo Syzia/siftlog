@@ -225,6 +225,15 @@ As built (stage 5):
 - Top attacker IPs, alerts over time, geo map
 - Keep it minimal. The detection logic is the point, not the UI polish. This is the most effort for the least signal in a detection role, so it comes after the MVP.
 
+As built (stage 7):
+- **Plain HTML, CSS and one JavaScript file, not React.** No build step, no package manager, and nothing fetched from the internet. The files are served by the API from `siftlog/api/static/`.
+- **Data is inserted as text only.** Usernames and raw lines are attacker-controlled, so the script builds every element with one helper that creates text nodes. A test fails if the script ever uses a markup-parsing or code-evaluating API. A strict content security policy (no inline script, same origin only, no framing) is the second line of defence.
+- **Sign-in is a link, not a form.** The server prints a URL whose fragment carries the token. A fragment is never sent to a server or written to a request log. The page stores it for the tab and removes it from the address bar. A token the operator chose is never printed.
+- **The command reference is data.** `static/commands.json` holds every command with `{{name}}` placeholders. The dashboard fills in this machine's values; `docs/commands.md` is generated from the same file with neutral placeholders, and a test keeps the two in step.
+- **Machine-specific values stay out of git.** The honeypot's address and key path come from `siftlog.local.json`. Every value is validated before it is put into a command, because these are commands a person will paste into a shell.
+- **The honeypot check is on demand.** It connects to the two ports of the configured host and reports what each says it is. The target cannot be chosen by a request. It runs only on a click and is cached for a minute, because each check is a visit the honeypot records.
+- The original plan's geo map is not built.
+
 ## Repo Layout
 
 ```

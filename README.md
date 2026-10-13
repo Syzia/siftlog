@@ -2,10 +2,10 @@
 
 A small SIEM for SSH auth logs. It parses logs into one event schema, stores them in SQLite, runs detection rules written in YAML, and serves the resulting alerts, with their evidence and an analyst workflow, over an HTTP API.
 
-> **Status: MVP, with live detection.** The whole path works on simulated data: parse, store, locate, detect, score against ground truth, and serve, either as a one-off replay or continuously as a log file grows. A honeypot is collecting real data for a later stage. There is no dashboard yet.
+> **Status: MVP, with live detection.** The whole path works on simulated data: parse, store, locate, detect, score against ground truth, and serve, either as a one-off replay or continuously as a log file grows. It has a local dashboard for working through alerts. A honeypot is collecting real data for a later stage.
 
 ```
- log file -> parser -> SQLite event store -> location enrichment -> rule engine -> alert store -> HTTP API
+ log file -> parser -> SQLite event store -> location enrichment -> rule engine -> alert store -> HTTP API -> dashboard
                 |                                                       ^
            dead letters                                          rules/*.yml
 ```
@@ -61,8 +61,8 @@ Then the whole pipeline, one step at a time:
 # 4. run the rules, score the alerts against ground truth, and save them for the API
 .venv/bin/python -m siftlog.engine --db siftlog.db --rules rules --labels sim.log.labels.json --log sim.log --save
 
-# 5. serve them. Prints an API token, then listens on http://127.0.0.1:8000
-.venv/bin/python -m siftlog.api --db siftlog.db --rules rules
+# 5. open the dashboard. Starts the server and opens your browser, already signed in.
+.venv/bin/python -m siftlog.api --db siftlog.db --rules rules --open
 ```
 
 `--year` is required because classic syslog timestamps carry no year, and guessing would silently corrupt every timestamp.
@@ -77,9 +77,22 @@ It prints each alert as it opens and each time it grows. It survives log rotatio
 
 To reproduce the results tables: `.venv/bin/python -m siftlog.evaluate --published`.
 
+## The dashboard
+
+`python -m siftlog.api … --open` starts the server and opens `http://127.0.0.1:8000/dashboard/` in your browser. It is one page of plain HTML and JavaScript served by the API itself: no build step, nothing loaded from the internet.
+
+- **Overview:** counts, alerts by rule and by day, and the busiest sources of failed logins, which is where a slow attacker shows up even when no rule fired.
+- **Alerts:** filter, open one to see the log lines behind it, and acknowledge, close or reopen it with a note.
+- **Events:** search stored events by address, username or type.
+- **Commands:** every command for running Siftlog and its honeypot, with this machine's own values filled in and a copy button. The same list, with placeholders, is in [docs/commands.md](docs/commands.md).
+
+**Signing in.** The server prints a link ending in `#token=…` that opens the dashboard already signed in. The part after `#` never leaves your browser, and the page removes it from the address bar at once. The token is kept for that tab only.
+
+**Your honeypot.** Put its address in a file named `siftlog.local.json` in the project folder, for example `{"honeypot_host": "192.0.2.10"}`. That file is git-ignored. The Overview then offers a *Check now* button that reports whether the honeypot and your admin login are answering, and the honeypot commands become ready to paste.
+
 ## The API
 
-Once the server is running, open `http://127.0.0.1:8000` in a browser. It redirects to the interactive documentation at `/docs`. Click **Authorize** and paste the token.
+Interactive documentation is at `http://127.0.0.1:8000/docs` once the server is running. Click **Authorize** and paste the token.
 
 | Method | Path | What it does |
 |--------|------|--------------|
@@ -154,9 +167,10 @@ mitre: [T1110.003]
 - **Rules.** Loaded with `yaml.safe_load`, so a rule file cannot construct Python objects.
 - **Engine.** Evidence is capped per alert, idle state is dropped, and each rule tracks a capped number of groups, forgetting the least recently active first. One attacker cycling through usernames cannot grow memory without bound.
 - **API.** A bearer token on every route but `/health`, compared in constant time. It listens on this machine only by default and refuses to listen elsewhere with a generated token. Parameters are typed and bounded. Responses are JSON only.
-- **Repository.** No real logs, credentials or attack traffic. Fixtures use documentation address ranges.
+- **Dashboard.** Log content is only ever inserted into the page as text, never as markup. A strict content security policy backs that up: no inline script, nothing from another origin, no framing. The honeypot check only ever connects to the address in your local settings file, and only when you click.
+- **Repository.** No real logs, credentials or attack traffic. Fixtures use documentation address ranges. Machine-specific values such as the honeypot's address live in a git-ignored file.
 
-**Known weaknesses.** One shared token and no user accounts, so the history records the actor as `api`. No TLS: beyond this machine it needs a reverse proxy. No rate limiting. The database is a single file, and anyone who can read it can read everything. Usernames and raw lines are returned as data, so anything that displays them must escape them.
+**Known weaknesses.** One shared token and no user accounts, so the history records the actor as `api`. The sign-in link contains that token, so treat the terminal it was printed in accordingly. No TLS: beyond this machine it needs a reverse proxy. No rate limiting. The database is a single file, and anyone who can read it can read everything. Usernames and raw lines are returned as data, so anything that displays them must escape them.
 
 ## Build stages
 
@@ -169,7 +183,7 @@ mitre: [T1110.003]
 | 4 | `temporal_ordered` + `impossible_travel` rules, GeoIP enrichment | done |
 | 5 | Alert store with analyst workflow + HTTP API (**MVP**) | done |
 | 6 | Live detection: streaming engine + log follower | done |
-| 7 | React dashboard (optional) | not started |
+| 7 | Local dashboard (plain HTML and JavaScript, no build step) | done |
 | 8 | Real data + web log parser | not started |
 | 9 | Sigma rule import (stretch) | not started |
 

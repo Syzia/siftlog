@@ -15,3 +15,6 @@ dev = ["pytest", "httpx"]  # httpx is what FastAPI's test client runs on
 
 [tool.setuptools.packages.find]
 include = ["siftlog*"]
+
+[tool.setuptools.package-data]
+siftlog = ["api/static/*"]  # the dashboard's page, script, styles and command list

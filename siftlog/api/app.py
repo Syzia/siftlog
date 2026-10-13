@@ -17,14 +17,18 @@ must not be used from another.
 # No `from __future__ import annotations` here: FastAPI resolves handler signatures
 # at import time, and the dependencies below are local to create_app().
 import hmac
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from siftlog.api.local import LocalConfig, command_variables, render_commands
+from siftlog.api.probe import HoneypotProbe
 from siftlog.engine.rules import SEVERITIES, Rule
 from siftlog.events import Event
 from siftlog.store import STATUSES, EventStore, StoredAlert
@@ -34,6 +38,14 @@ Severity = Literal["low", "medium", "high", "critical"]
 assert set(Status.__args__) == set(STATUSES) and set(Severity.__args__) == set(SEVERITIES)  # type: ignore[attr-defined]
 
 MAX_PAGE = 1000
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+# The dashboard shows attacker-controlled text (usernames, raw log lines). Its script
+# only ever inserts that as text, and this policy is the second line of defence: no
+# inline script, nothing loaded from another origin, and no framing.
+DASHBOARD_CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
 
 
 class EventOut(BaseModel):
@@ -149,6 +161,35 @@ class StatsOut(BaseModel):
     alerts_over_time: List[DayCount]
 
 
+class CommandOut(BaseModel):
+    title: str
+    where: Literal["mac", "honeypot"]
+    command: str
+    note: str
+    ready: bool  # False when it needs a value this machine has not been given
+    missing: List[str]
+
+
+class CommandGroup(BaseModel):
+    title: str
+    about: str
+    commands: List[CommandOut]
+
+
+class PortCheck(BaseModel):
+    port: int
+    role: Literal["honeypot", "admin"]
+    open: bool
+    banner: str
+
+
+class HoneypotStatus(BaseModel):
+    configured: bool
+    host: Optional[str]
+    checked_at: Optional[datetime]
+    checks: List[PortCheck]
+
+
 def _utc(value: Optional[datetime]) -> Optional[datetime]:
     """A timestamp given without an offset is taken as UTC, like everything stored."""
     if value is None or value.tzinfo is not None:
@@ -175,11 +216,28 @@ def _alert_fields(stored: StoredAlert) -> Dict[str, Any]:
     )  # fmt: skip
 
 
-def create_app(db_path: str, rules: Sequence[Rule], token: str) -> FastAPI:
-    """Build the API for one database. ``token`` is the bearer token every caller must send."""
+def create_app(
+    db_path: str,
+    rules: Sequence[Rule],
+    token: str,
+    *,
+    local: Optional[LocalConfig] = None,
+    project_dir: Optional[str] = None,
+    rules_path: str = "rules",
+    probe: Optional[HoneypotProbe] = None,
+) -> FastAPI:
+    """Build the API and dashboard for one database.
+
+    ``token`` is the bearer token every caller must send. ``local`` holds this
+    machine's own settings (the honeypot's address), and ``project_dir`` is
+    where commands shown on the dashboard should be run from.
+    """
     if not token:
         raise ValueError("an API token is required")
     expected = token.encode("utf-8")
+    local = local or LocalConfig()
+    probe = probe or HoneypotProbe(local.honeypot_host, local.honeypot_port)
+    variables = command_variables(local, project_dir, db_path, rules_path)
 
     app = FastAPI(
         title="Siftlog",
@@ -198,6 +256,9 @@ def create_app(db_path: str, rules: Sequence[Rule], token: str) -> FastAPI:
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if request.url.path.startswith("/dashboard"):
+            response.headers["Content-Security-Policy"] = DASHBOARD_CSP
         return response
 
     @app.get("/health", summary="Liveness check (no token needed)")
@@ -207,7 +268,7 @@ def create_app(db_path: str, rules: Sequence[Rule], token: str) -> FastAPI:
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
         # Someone opening the bare address in a browser should land somewhere useful, not on a 404.
-        return RedirectResponse("/docs")
+        return RedirectResponse("/dashboard/")
 
     api = APIRouter(dependencies=[Depends(authorised)])
 
@@ -304,5 +365,21 @@ def create_app(db_path: str, rules: Sequence[Rule], token: str) -> FastAPI:
             for r in rules
         ]
 
+    @api.get("/commands", response_model=List[CommandGroup], summary="The command reference, filled in for this machine")
+    def list_commands() -> List[CommandGroup]:
+        return [CommandGroup(**group) for group in render_commands(variables)]
+
+    @api.get("/honeypot", response_model=HoneypotStatus, summary="The last honeypot check (does not connect)")
+    def honeypot_status() -> HoneypotStatus:
+        return HoneypotStatus(**probe.last())
+
+    @api.post("/honeypot/check", response_model=HoneypotStatus, summary="Check the honeypot's ports now")
+    def honeypot_check() -> HoneypotStatus:
+        # The target is fixed by the local settings file. Nothing in the request chooses it.
+        return HoneypotStatus(**probe.check())
+
     app.include_router(api)
+    # The dashboard's own files hold no data and need no token: a browser cannot send one
+    # when it first loads a page. Everything they display comes from the routes above.
+    app.mount("/dashboard", StaticFiles(directory=STATIC_DIR, html=True), name="dashboard")
     return app
