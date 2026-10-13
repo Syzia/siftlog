@@ -77,6 +77,13 @@ class SimulatedLogTests(unittest.TestCase):
         self.assertEqual(len(of("typo_benign", AUTH_SUCCESS)), 1)
         self.assertTrue(1 <= len(of("typo_benign", AUTH_FAILURE)) <= 3)
 
+        won = by_scenario["brute_force_success-0"]
+        self.assertEqual([e.event_type for e in won], [AUTH_FAILURE] * 25 + [AUTH_SUCCESS])
+        self.assertEqual(({e.username for e in won}, len({e.src_ip for e in won})), ({"ops"}, 1))
+
+        vpn = of("vpn_hop", AUTH_SUCCESS)
+        self.assertEqual([(e.username, e.src_ip) for e in vpn], [("vera", "198.51.100.10"), ("vera", "198.51.100.20")])
+
         # Baseline traffic is successes only: it must never look like an attack.
         self.assertEqual({e.event_type for e in by_scenario[BACKGROUND]}, {AUTH_SUCCESS})
 

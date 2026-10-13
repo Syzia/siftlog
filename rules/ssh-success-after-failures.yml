@@ -1,0 +1,21 @@
+id: ssh-success-after-failures
+title: SSH login succeeded after repeated failures
+description: >
+  Several failed logins for one account from one address, followed by a
+  success from that same address: a password guess that worked. Grouped by
+  address AND username on purpose. Grouping by address alone fires on any
+  NAT'd office where a few people mistype a password and someone else logs in.
+severity: critical
+type: temporal_ordered
+filter:
+  source: sshd
+group_by: [src_ip, username]
+timespan: 10m
+steps:
+  - filter:
+      event_type: auth_failure
+    condition:
+      gte: 5
+  - filter:
+      event_type: auth_success
+mitre: [T1110.001, T1078]

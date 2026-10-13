@@ -47,6 +47,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"{a.first_seen:%Y-%m-%d %H:%M:%S} -> {a.last_seen:%H:%M:%S}  "
             f"{a.event_count} events{distinct}"
         )
+        if a.summary:
+            print(f"      {a.summary}")
     if args.labels:
         event_scenarios = None
         if args.log:

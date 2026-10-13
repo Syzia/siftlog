@@ -11,11 +11,11 @@ T0 = datetime(2026, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
 _ids = itertools.count()
 
 
-def ev(seconds, ip="203.0.113.5", user="root", etype=AUTH_FAILURE, host="web01", count=1):
+def ev(seconds, ip="203.0.113.5", user="root", etype=AUTH_FAILURE, host="web01", count=1, geo=None):
     n = next(_ids)
     return Event(
         id=f"e{n}", timestamp=T0 + timedelta(seconds=seconds), source="sshd", event_type=etype,
-        src_ip=ip, username=user, host=host, outcome="failure", raw="", count=count,
+        src_ip=ip, username=user, host=host, outcome="failure", raw="", count=count, geo=geo,
         source_id="t", offset=n,
     )  # fmt: skip
 
@@ -205,6 +205,179 @@ class EngineContractTests(unittest.TestCase):
         finally:
             replay_module._SWEEP_EVERY = original
         self.assertEqual(len([a for a in expected if a.group_key == "203.0.113.1"]), 2)
+
+
+SUCCESS_AFTER_FAILURES = parse_rule({
+    "id": "success", "title": "Success after failures", "type": "temporal_ordered",
+    "group_by": ["src_ip", "username"], "timespan": "10m",
+    "steps": [
+        {"filter": {"event_type": "auth_failure"}, "condition": {"gte": 5}},
+        {"filter": {"event_type": "auth_success"}},
+    ],
+})  # fmt: skip
+
+
+def ok(seconds, **kwargs):
+    return ev(seconds, etype=AUTH_SUCCESS, **kwargs)
+
+
+class SequenceTests(unittest.TestCase):
+    def test_failures_then_success_fires_once(self):
+        events = [ev(i) for i in range(5)] + [ok(10)]
+        (alert,) = replay([SUCCESS_AFTER_FAILURES], events)
+        self.assertEqual((alert.rule_id, alert.group_key, alert.event_count), ("success", "203.0.113.5|root", 6))
+        self.assertEqual((alert.first_seen, alert.last_seen), (at(0), at(10)))
+        self.assertEqual(alert.evidence_event_ids, tuple(e.id for e in events))
+
+    def test_too_few_failures_is_not_enough(self):
+        self.assertEqual(replay([SUCCESS_AFTER_FAILURES], [ev(i) for i in range(4)] + [ok(10)]), [])
+
+    def test_order_matters(self):
+        # A login followed by failures is somebody locking themselves out, not a guessed password.
+        self.assertEqual(replay([SUCCESS_AFTER_FAILURES], [ok(0)] + [ev(1 + i) for i in range(5)]), [])
+
+    def test_failures_must_still_be_inside_the_window(self):
+        failures = [ev(i) for i in range(5)]  # the last at t=4s
+        self.assertEqual(len(replay([SUCCESS_AFTER_FAILURES], failures + [ok(599)])), 1)
+        self.assertEqual(replay([SUCCESS_AFTER_FAILURES], [ev(i) for i in range(5)] + [ok(604)]), [])
+
+    def test_grouping_by_user_keeps_a_shared_address_quiet(self):
+        # A NAT'd office: five people mistype, a sixth logs in. Same address, different accounts.
+        typos = [ev(i, ip="192.0.2.10", user=f"user{i}") for i in range(5)]
+        events = typos + [ok(10, ip="192.0.2.10", user="someone-else")]
+        self.assertEqual(replay([SUCCESS_AFTER_FAILURES], events), [])
+        by_address_only = parse_rule({
+            "id": "loose", "title": "t", "type": "temporal_ordered", "group_by": ["src_ip"], "timespan": "10m",
+            "steps": [{"filter": {"event_type": "auth_failure"}, "condition": {"gte": 5}},
+                      {"filter": {"event_type": "auth_success"}}],
+        })  # fmt: skip
+        self.assertEqual(len(replay([by_address_only], events)), 1)  # ...which is the false alarm avoided
+
+    def test_repeat_counts_weigh_towards_a_step(self):
+        self.assertEqual(len(replay([SUCCESS_AFTER_FAILURES], [ev(0, count=5), ok(5)])), 1)
+
+    def test_a_second_login_extends_the_same_alert(self):
+        (alert,) = replay([SUCCESS_AFTER_FAILURES], [ev(i) for i in range(5)] + [ok(10), ok(60)])
+        self.assertEqual((alert.event_count, alert.last_seen), (7, at(60)))
+
+    def test_only_an_event_that_completes_the_sequence_extends_the_alert(self):
+        # A failure after the successful login completes nothing, so it is not evidence.
+        (alert,) = replay([SUCCESS_AFTER_FAILURES], [ev(i) for i in range(5)] + [ok(10), ev(20)])
+        self.assertEqual((alert.event_count, alert.last_seen), (6, at(10)))
+        # ...until another success arrives, which completes it again and brings that failure with it.
+        (alert,) = replay([SUCCESS_AFTER_FAILURES], [ev(i) for i in range(5)] + [ok(10), ev(20), ok(30)])
+        self.assertEqual((alert.event_count, alert.last_seen), (8, at(30)))
+
+    def test_a_much_later_login_is_unrelated(self):
+        (alert,) = replay([SUCCESS_AFTER_FAILURES], [ev(i) for i in range(5)] + [ok(10), ok(5000)])
+        self.assertEqual((alert.event_count, alert.last_seen), (6, at(10)))
+
+    def test_three_steps_in_order(self):
+        three = parse_rule({
+            "id": "three", "title": "t", "type": "temporal_ordered", "group_by": ["src_ip"], "timespan": "10m",
+            "steps": [{"filter": {"event_type": "invalid_user"}},
+                      {"filter": {"event_type": "auth_failure"}, "condition": {"gte": 2}},
+                      {"filter": {"event_type": "auth_success"}}],
+        })  # fmt: skip
+        in_order = [ev(0, etype=INVALID_USER), ev(1), ev(2), ok(3)]
+        self.assertEqual(len(replay([three], in_order)), 1)
+        wrong_order = [ev(0), ev(1), ev(2, etype=INVALID_USER), ok(3)]
+        self.assertEqual(replay([three], wrong_order), [])
+
+    def test_one_event_cannot_satisfy_two_steps(self):
+        twice = parse_rule({
+            "id": "twice", "title": "t", "type": "temporal_ordered", "group_by": ["src_ip"], "timespan": "10m",
+            "steps": [{"filter": {"event_type": "auth_failure"}}, {"filter": {"event_type": "auth_failure"}}],
+        })  # fmt: skip
+        self.assertEqual(replay([twice], [ev(0)]), [])
+        self.assertEqual(len(replay([twice], [ev(0), ev(1)])), 1)
+
+    def test_a_successful_brute_force_trips_both_rules(self):
+        events = [ev(i) for i in range(25)] + [ok(30)]
+        self.assertEqual(sorted(a.rule_id for a in replay([BRUTE, SUCCESS_AFTER_FAILURES], events)), ["brute", "success"])
+
+
+LONDON = {"lat": 51.5074, "lon": -0.1278, "city": "London"}
+READING = {"lat": 51.4543, "lon": -0.9781, "city": "Reading"}  # about 60 km from London
+NEW_YORK = {"lat": 40.7128, "lon": -74.0060, "city": "New York"}
+SYDNEY = {"lat": -33.8688, "lon": 151.2093, "city": "Sydney"}
+MIN = 60
+HOUR = 3600
+
+
+def travel(**overrides):
+    data = {
+        "id": "travel", "title": "Impossible travel", "type": "impossible_travel",
+        "filter": {"event_type": "auth_success"}, "group_by": ["username"],
+        "timespan": "24h", "max_speed_kmh": 900, "min_distance_km": 100,
+    }  # fmt: skip
+    data.update(overrides)
+    return parse_rule(data)
+
+
+def login(seconds, geo, user="carol", ip="198.51.100.10"):
+    return ev(seconds, etype=AUTH_SUCCESS, user=user, ip=ip, geo=geo)
+
+
+class TravelTests(unittest.TestCase):
+    def test_two_distant_logins_close_in_time_fire(self):
+        events = [login(0, LONDON), login(25 * MIN, SYDNEY)]
+        (alert,) = replay([travel()], events)
+        self.assertEqual((alert.group_key, alert.event_count), ("carol", 2))
+        self.assertEqual((alert.first_seen, alert.last_seen), (at(0), at(25 * MIN)))
+        self.assertEqual(alert.evidence_event_ids, tuple(e.id for e in events))
+        self.assertIn("London -> Sydney", alert.summary)
+        self.assertIn("km/h", alert.summary)
+
+    def test_a_normal_flight_does_not_fire(self):
+        self.assertEqual(replay([travel()], [login(0, LONDON), login(14 * HOUR, NEW_YORK)]), [])  # ~400 km/h
+
+    def test_just_faster_than_an_airliner_fires(self):
+        self.assertEqual(len(replay([travel()], [login(0, LONDON), login(5 * HOUR, NEW_YORK)])), 1)  # ~1,100 km/h
+
+    def test_nearby_networks_are_ignored_whatever_the_speed(self):
+        # GeoIP often places one user's home and mobile networks in neighbouring towns.
+        hop = [login(0, LONDON), login(MIN, READING)]  # 60 km in a minute is 3,600 km/h
+        self.assertEqual(replay([travel()], hop), [])
+        self.assertEqual(len(replay([travel(min_distance_km=0)], hop)), 1)
+
+    def test_same_place_twice_is_not_travel(self):
+        self.assertEqual(replay([travel(min_distance_km=0)], [login(0, LONDON), login(MIN, LONDON)]), [])
+
+    def test_users_are_independent(self):
+        events = [login(0, LONDON, user="alice"), login(MIN, SYDNEY, user="bob")]
+        self.assertEqual(replay([travel()], events), [])
+
+    def test_events_without_a_location_are_skipped_not_compared(self):
+        events = [login(0, LONDON), login(10 * MIN, None), login(25 * MIN, SYDNEY)]
+        (alert,) = replay([travel()], events)
+        self.assertEqual(alert.event_count, 2)  # London and Sydney; the unlocated login is not evidence
+
+    def test_malformed_locations_are_ignored(self):
+        bad = [{}, {"lat": 51.5}, {"lat": "51.5", "lon": "0"}, {"lat": float("nan"), "lon": 0.0},
+               {"lat": 200.0, "lon": 0.0}, {"lat": True, "lon": False}, "London", 42]  # fmt: skip
+        events = [login(i * MIN, geo) for i, geo in enumerate(bad)] + [login(60 * MIN, SYDNEY)]
+        self.assertEqual(replay([travel()], events), [])
+
+    def test_only_logins_inside_the_timespan_are_compared(self):
+        strict = travel(timespan="1h", max_speed_kmh=1)  # anything that moves at all would fire
+        self.assertEqual(len(replay([strict], [login(0, LONDON), login(30 * MIN, SYDNEY)])), 1)
+        self.assertEqual(replay([strict], [login(0, LONDON), login(2 * HOUR, SYDNEY)]), [])
+
+    def test_two_places_at_the_same_instant(self):
+        (alert,) = replay([travel()], [login(0, LONDON), login(0, SYDNEY)])
+        self.assertIn("at the same moment", alert.summary)
+
+    def test_bouncing_between_two_places_is_one_alert(self):
+        # The real user keeps working in London while the thief is active in Sydney.
+        events = [login(0, LONDON), login(25 * MIN, SYDNEY), login(45 * MIN, LONDON)]
+        (alert,) = replay([travel()], events)
+        self.assertEqual((alert.event_count, alert.last_seen), (3, at(45 * MIN)))
+        self.assertEqual(alert.evidence_event_ids, tuple(e.id for e in events))  # each login listed once
+
+    def test_the_filter_still_applies(self):
+        failures = [ev(0, user="carol", geo=LONDON), ev(MIN, user="carol", geo=SYDNEY)]
+        self.assertEqual(replay([travel()], failures), [])
 
 
 if __name__ == "__main__":

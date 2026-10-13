@@ -95,6 +95,49 @@ class EvidenceScoringTests(unittest.TestCase):
         self.assertEqual((report.recall, report.attack_recall), (1.0, 0.5))
 
 
+class MultipleExpectedAlertTests(unittest.TestCase):
+    """One attack can be expected to trip more than one rule."""
+
+    BOTH = ScenarioLabel(
+        id="brute_force_success-0", kind="brute_force_success", is_attack=True, expect_alert=True,
+        group_key="203.0.113.1", rule_hint="brute", start=at(0), end=at(10),
+        also_expected=(("success", "203.0.113.1|ops"),),
+    )
+    TRUTH = {f"s{i}": "brute_force_success-0" for i in range(30)}
+
+    def evidence(self):
+        return [f"s{i}" for i in range(10)]
+
+    def run_score(self, alerts):
+        return score([self.BOTH], alerts, ("brute", "success"), self.TRUTH)
+
+    def test_expected_alerts_property(self):
+        self.assertEqual(self.BOTH.expected_alerts, (("brute", "203.0.113.1"), ("success", "203.0.113.1|ops")))
+        self.assertEqual(QUIET.expected_alerts, ())
+        self.assertEqual(ScenarioLabel.from_dict(self.BOTH.to_dict()), self.BOTH)
+
+    def test_both_rules_firing_is_full_recall_with_no_bonus(self):
+        report = self.run_score([
+            alert(rule="brute", evidence=self.evidence()),
+            alert(rule="success", key="203.0.113.1|ops", evidence=self.evidence()),
+        ])
+        self.assertEqual((report.recall, report.precision, report.missed), (1.0, 1.0, ()))
+        self.assertEqual([r.bonus_alerts for r in report.rules], [0, 0])
+        self.assertEqual((report.rule("brute").expected, report.rule("success").expected), (1, 1))
+        # Two expected alerts, but still one attack.
+        self.assertEqual((report.attacks, report.attacks_detected, report.attack_recall), (1, 1, 1.0))
+
+    def test_missing_the_second_rule_is_named(self):
+        report = self.run_score([alert(rule="brute", evidence=self.evidence())])
+        self.assertEqual((report.recall, report.missed), (0.5, ("brute_force_success-0:success",)))
+        self.assertEqual((report.attacks_detected, report.attack_recall), (1, 1.0))  # the attack was still seen
+
+    def test_the_second_rule_must_use_its_own_group_key(self):
+        report = self.run_score([alert(rule="success", key="203.0.113.1", evidence=self.evidence())])
+        self.assertEqual(report.rule("success").detected, 0)
+        self.assertIn("brute_force_success-0:success", report.missed)
+
+
 class FallbackScoringTests(unittest.TestCase):
     """Without per-event ground truth, matching is by group key and time overlap."""
 

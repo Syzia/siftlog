@@ -2,9 +2,12 @@
 from siftlog.engine.replay import MAX_EVIDENCE, Alert, ReplayEngine, run_rules
 from siftlog.engine.rules import (
     EVENT_COUNT,
+    IMPOSSIBLE_TRAVEL,
+    TEMPORAL_ORDERED,
     VALUE_COUNT,
     Rule,
     RuleError,
+    Step,
     load_rules,
     parse_rule,
 )
@@ -12,7 +15,9 @@ from siftlog.engine.scoring import RuleScore, ScoreReport, merge, score
 
 __all__ = [
     "EVENT_COUNT",
+    "IMPOSSIBLE_TRAVEL",
     "MAX_EVIDENCE",
+    "TEMPORAL_ORDERED",
     "VALUE_COUNT",
     "Alert",
     "ReplayEngine",
@@ -20,6 +25,7 @@ __all__ = [
     "RuleError",
     "RuleScore",
     "ScoreReport",
+    "Step",
     "load_rules",
     "merge",
     "parse_rule",
