@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+
+# Secrets and local config
+.env
+.env.*
+
+# Never commit real data: logs, databases, GeoIP databases
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.mmdb
+data/
+!tests/fixtures/*.log
+
+# Dashboard
+node_modules/
+dashboard/dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
