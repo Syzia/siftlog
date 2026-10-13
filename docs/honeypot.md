@@ -334,7 +334,9 @@ Every Cowrie record carries `eventid`, `timestamp` (ISO 8601, UTC), `session`, `
 | `cowrie.login.failed` / `cowrie.login.success` | `auth_failure` / `auth_success` | `username`, `password` (or key `fingerprint`) |
 | `cowrie.command.input` | `command` | `input` |
 | `cowrie.session.file_upload` | `file_transfer` | `filename`, `shasum` |
-| `cowrie.session.file_download` (and `.failed`) | `file_transfer` | `url`, `shasum` |
+| `cowrie.session.file_download` (and `.failed`) | `file_transfer` | `url`, `destfile`, `shasum` |
+
+A `file_download` is not always a download. Cowrie writes the same record, with no `url`, when a shell command creates a file, as in `echo key >> .ssh/authorized_keys`. Siftlog marks those `written` and keeps `destfile`, the path that was written. In the first three hours of real data, 16 of the 17 file events were this kind.
 
 Everything else is ignored and counted: `--show-ignored` prints how many of each. If one of those counts turns out to be interesting, that is the cue to map it.
 
@@ -347,11 +349,15 @@ A honeypot is not a server with users, and two things about its data shape the r
 
 | Rule | Fires when one address | Severity |
 |------|------------------------|----------|
-| `honeypot-file-transfer` | uploads a file, or makes the honeypot download one (failed downloads included) | high |
+| `honeypot-file-transfer` | uploads a file, makes the honeypot download one (failed downloads included), or writes one with a shell command | high |
 | `honeypot-shell-commands` | runs any command after logging in | medium |
 | `honeypot-credential-sweep` | tries five or more usernames within ten minutes | low |
 
 One visit is one alert. The same address coming back hours later is a new one.
+
+`honeypot-shell-commands` is the noisy one. It cannot tell a lone `uname` from a malware install, because rules cannot yet match on the text of a command. Read the high-severity alerts first.
+
+**After changing the parser, rebuild the database.** Ingest skips lines it has already stored, so events parsed by an older version keep their old fields. Delete `data/honeypot.db` and run step 2 again. Decisions recorded on its alerts are lost with it.
 
 The first upload captured was a 30 MB file named `sshd`: malware masquerading as the SSH daemon (MITRE ATT&CK T1036.005). `dst_port` in every record is 2222, not 22, because of the redirect in step 7.
 

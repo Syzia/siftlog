@@ -99,16 +99,32 @@ class MappingTests(unittest.TestCase):
         self.assertEqual((failed.extra["direction"], failed.extra["url"]), ("download", "http://203.0.113.200/y"))
         self.assertNotIn("shasum", failed.extra)
 
+    def test_a_file_written_by_a_shell_command_is_not_called_a_download(self):
+        # Seen in real data: `echo key >> .ssh/authorized_keys` is logged as file_download with no url.
+        written = event_of(record("cowrie.session.file_download", destfile="/root/.ssh/authorized_keys",
+                                  outfile="var/x", shasum="ef" * 32, duplicate=False,
+                                  message="Saved redir contents with SHA-256"))  # fmt: skip
+        self.assertEqual((written.event_type, written.outcome), (FILE_TRANSFER, OUTCOME_SUCCESS))
+        self.assertEqual((written.extra["direction"], written.extra["destfile"]), ("written", "/root/.ssh/authorized_keys"))
+        self.assertNotIn("url", written.extra)
+        # A real download keeps both: where it came from and where it was put.
+        fetched = event_of(record("cowrie.session.file_download", url="http://203.0.113.200/x", destfile="/tmp/.x"))
+        self.assertEqual((fetched.extra["direction"], fetched.extra["destfile"]), ("download", "/tmp/.x"))
+        # A url of the wrong type is no url at all.
+        self.assertEqual(event_of(record("cowrie.session.file_download", url=["http://x"])).extra["direction"], "written")
+
     def test_bookkeeping_events_are_ignored_with_their_event_id_as_the_reason(self):
         for eventid in ("cowrie.client.version", "cowrie.client.kex", "cowrie.session.closed", "cowrie.log.closed",
                         "cowrie.session.params", "cowrie.client.var", "cowrie.direct-tcpip.request"):
             result = parse(record(eventid))
             self.assertEqual((result.events, result.ignored, result.dead_letter), ((), f"eventid:{eventid}", None))
 
-    def test_command_failed_is_ignored_because_it_repeats_command_input(self):
-        # Cowrie logs command.input for every line typed, then command.failed if it was not found.
-        # Counting both would double the command.
-        self.assertEqual(parse(record("cowrie.command.failed", input="foo")).ignored, "eventid:cowrie.command.failed")
+    def test_command_results_are_ignored_because_they_repeat_command_input(self):
+        # Cowrie logs command.input for every line typed, then command.success or command.failed
+        # for each command in it. Counting those too would double the command. Checked against
+        # real data: every one of them followed a command.input in the same session.
+        for eventid in ("cowrie.command.failed", "cowrie.command.success"):
+            self.assertEqual(parse(record(eventid, input="foo")).ignored, f"eventid:{eventid}")
 
     def test_an_event_id_cowrie_adds_in_future_is_ignored_not_dead(self):
         result = parse(record("cowrie.something.new"))
@@ -243,23 +259,31 @@ class FixtureTests(unittest.TestCase):
         cls.events = [event for result in cls.results for event in result.events]
 
     def test_every_line_is_understood(self):
-        self.assertEqual(len(self.results), 66)
+        self.assertEqual(len(self.results), 74)
         self.assertEqual([r.dead_letter for r in self.results if r.dead_letter], [])
-        self.assertEqual(len(self.events), 31)
+        self.assertEqual(len(self.events), 35)
 
     def test_event_types(self):
         self.assertEqual(Counter(e.event_type for e in self.events), {
-            CONNECTION: 10, AUTH_SUCCESS: 9, COMMAND: 7, FILE_TRANSFER: 3, AUTH_FAILURE: 2,
+            CONNECTION: 11, AUTH_SUCCESS: 10, COMMAND: 8, FILE_TRANSFER: 4, AUTH_FAILURE: 2,
         })  # fmt: skip
         self.assertEqual({e.source for e in self.events}, {"cowrie"})
         self.assertEqual({e.host for e in self.events}, {"honeypot01"})
 
     def test_ignored_reasons(self):
         self.assertEqual(Counter(r.ignored for r in self.results if r.ignored), {
-            "eventid:cowrie.client.version": 10, "eventid:cowrie.client.kex": 10, "eventid:cowrie.session.closed": 10,
+            "eventid:cowrie.client.version": 11, "eventid:cowrie.client.kex": 11, "eventid:cowrie.session.closed": 11,
             "eventid:cowrie.client.var": 1, "eventid:cowrie.session.params": 1, "eventid:cowrie.command.failed": 1,
-            "eventid:cowrie.log.closed": 1, "eventid:cowrie.direct-tcpip.request": 1,
+            "eventid:cowrie.command.success": 1, "eventid:cowrie.log.closed": 1, "eventid:cowrie.direct-tcpip.request": 1,
         })  # fmt: skip
+
+    def test_the_three_ways_a_file_arrives(self):
+        files = [e for e in self.events if e.event_type == FILE_TRANSFER]
+        self.assertEqual([(e.extra["direction"], e.outcome) for e in files], [
+            ("upload", OUTCOME_SUCCESS), ("download", OUTCOME_SUCCESS), ("download", OUTCOME_FAILURE),
+            ("written", OUTCOME_SUCCESS),
+        ])  # fmt: skip
+        self.assertEqual(files[-1].extra["destfile"], "/root/.ssh/authorized_keys")
 
     def test_one_visit_reads_as_a_story(self):
         visit = [e for e in self.events if e.extra["session"] == "2c3d4e5f6071"]

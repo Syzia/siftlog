@@ -87,6 +87,8 @@ As built (stage 8), the Cowrie honeypot parser:
 - **The injection risk is different from sshd's.** In free text a username can impersonate the rest of the line. In JSON it cannot, so the care goes into types instead: a field that is not a string is treated as absent, the source address must be an address *in a string* (`ip_address(5)` is valid Python), and attacker-typed values are cut to 4,096 characters in structured fields while `raw` keeps the whole line.
 - **No year is needed.** Cowrie timestamps are complete, so `--year` is required only for sources that need it. A parser declares which with `needs_year`.
 - **Your own visits can be left out.** `--ignore-ip` drops lines from the addresses you name, counted as ignored (`own-address`). It is done at ingest, so those events are never stored. Adding an address later means rebuilding the database.
+- **A `file_download` with no URL is a file a shell command wrote**, not something fetched. Real data showed this on its first day: 16 of 17 file events. They get `direction: written` and keep `destfile`.
+- **Re-parsing means rebuilding.** Event ids are deterministic and inserts skip what is already stored, which is what makes ingest safe to repeat. The cost: when a parser starts extracting a field differently, events already stored keep the old version until the database is rebuilt, and analyst decisions on its alerts go with it.
 - **Known gap:** a record longer than the 64 KiB line cap is cut short, stops being valid JSON, and becomes a dead letter. A very long pasted command is exactly the kind of record this could lose as an event. It is still kept, truncated, in the dead-letter table.
 
 ### 4. Enrichment (optional step in the normalizer)
