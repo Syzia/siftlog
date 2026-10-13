@@ -13,7 +13,7 @@ Simulated traffic first, so every rule is tested against labelled attack and ben
 | Stage | Deliverable | Status |
 |-------|-------------|--------|
 | 0 | Cowrie honeypot on an isolated VPS | not started |
-| 1 | Labelled log simulator + SSH parser + event schema | in progress |
+| 1 | Labelled log simulator + SSH parser + event schema | done |
 | 2 | SQLite event store + idempotent batch ingest | not started |
 | 3 | Replay-mode engine, `event_count` and `value_count` rules | not started |
 | 4 | `temporal` + `impossible_travel` rules, GeoIP enrichment | not started |
@@ -22,6 +22,24 @@ Simulated traffic first, so every rule is tested against labelled attack and ben
 | 7 | React dashboard (optional) | not started |
 | 8 | Real data + web log parser | not started |
 | 9 | Sigma rule import (stretch) | not started |
+
+## Try it
+
+Needs Python 3.9+ and nothing else (stdlib only so far).
+
+```bash
+# run the tests
+python3 -m unittest discover -s tests -t .
+
+# generate a labelled log: sim.log + sim.log.labels.json (ground truth per scenario)
+python3 -m siftlog.simulator --seed 1234 --out sim.log
+```
+
+The simulator emits five attack scenarios and four benign ones (typos, a NAT'd office, legitimate travel, a monitoring probe). One attack, `low_and_slow`, is deliberately under the default thresholds and labelled `expect_alert: false`: it is a documented miss, not a bug.
+
+## Parser behaviour worth knowing
+
+Each line becomes an **event**, is **ignored** with a reason (understood, not security-relevant, or a duplicate of a line already counted), or becomes a **dead letter** (not understood, kept for inspection). Usernames are attacker-controlled, so source addresses are always taken from the end of the line, where sshd wrote them.
 
 ## Safety
 
