@@ -10,7 +10,7 @@ A small SIEM for SSH auth logs. It parses logs into one event schema, stores the
            dead letters                                          rules/*.yml
 ```
 
-The full design, including what changed while building it, is in [docs/architecture.md](docs/architecture.md).
+The full design, including what changed while building it, is in [docs/architecture.md](docs/architecture.md). Findings, mistakes and the first real attack caught by the honeypot are in [docs/devlog.md](docs/devlog.md).
 
 ## Results
 
