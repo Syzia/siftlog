@@ -103,6 +103,14 @@ class PageSafetyTests(unittest.TestCase):
                 self.assertNotIn(banned, script)
         self.assertIn("createTextNode", script)  # how data reaches the page instead
 
+    def test_every_event_type_has_a_name_on_the_page(self):
+        from siftlog import events
+
+        script = static("app.js")
+        for name in ("AUTH_FAILURE", "AUTH_SUCCESS", "INVALID_USER", "CONNECTION", "COMMAND", "FILE_TRANSFER"):
+            with self.subTest(event_type=name):
+                self.assertIn(f'["{getattr(events, name)}", "', script)
+
     def test_page_has_no_inline_script_style_or_handlers(self):
         page = static("index.html")
         scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", page, flags=re.S)
@@ -157,6 +165,11 @@ class LocalConfigTests(DashboardTestCase):
             {"honeypot_port": 70000},
             {"honeypot_port": "22222"},
             {"honeypot_port": True},
+            {"own_addresses": "198.51.100.7"},  # must be a list
+            {"own_addresses": ["198.51.100.7; rm -rf ~"]},
+            {"own_addresses": ["my-laptop"]},
+            {"own_addresses": ["198.51.100.7", 5]},
+            {"own_addresses": ["198.51.100.0/99"]},
             {"honeypot_hots": HOST},  # a typo must not be silently ignored
         ]
         for data in bad:
@@ -183,6 +196,32 @@ class CommandTests(DashboardTestCase):
         self.assertTrue(opener.startswith('cd "/Users/me/Mini Projects/siftlog" && '))  # quoted: the path has a space
         self.assertIn(f"--db {self.db}", opener)
         self.assertEqual({c["where"] for c in commands}, {"mac", "honeypot"})
+
+    def test_own_addresses_are_put_in_the_honeypot_ingest_command(self):
+        title = "2. Parse the logs into the honeypot database"
+        plain = next(c for c in self.commands(local=LocalConfig(honeypot_host=HOST), project_dir="/p") if c["title"] == title)
+        self.assertEqual(
+            plain["command"],
+            'cd "/p" && .venv/bin/python -m siftlog.ingest ~/honeypot-logs/cowrie.json* '
+            "--source cowrie --db data/honeypot.db --show-ignored",
+        )
+        path = os.path.join(self.dir, "siftlog.local.json")
+        with open(path, "w") as fh:  # written the long way round, to show it is rewritten in standard form
+            json.dump({"own_addresses": ["198.51.100.7", "2001:0DB8:0000::/32"]}, fh)
+        config = load_local_config(path)
+        self.assertEqual(config.own_addresses, ("198.51.100.7", "2001:db8::/32"))
+        mine = next(c for c in self.commands(local=config, project_dir="/p") if c["title"] == title)
+        self.assertTrue(mine["ready"])
+        self.assertTrue(mine["command"].endswith("--show-ignored --ignore-ip 198.51.100.7 --ignore-ip 2001:db8::/32"))
+
+    def test_the_honeypot_data_steps_are_in_order_and_use_their_own_database(self):
+        groups = self.client(local=LocalConfig(honeypot_host=HOST), project_dir="/p").get("/commands", headers=AUTH).json()
+        steps = next(g for g in groups if g["title"] == "Honeypot data, step by step")["commands"]
+        self.assertEqual([c["title"][:2] for c in steps], ["1.", "2.", "3.", "4."])
+        self.assertIn("rsync", steps[0]["command"])
+        for step in steps[1:]:
+            self.assertIn("--db data/honeypot.db", step["command"])  # never mixed into the practice data
+            self.assertNotIn(self.db, step["command"])
 
     def test_commands_run_on_the_mac_all_start_in_the_project_folder(self):
         # A bare relative command fails when the terminal is somewhere else.

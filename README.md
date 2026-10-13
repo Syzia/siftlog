@@ -1,8 +1,8 @@
 # Siftlog
 
-A small SIEM for SSH auth logs. It parses logs into one event schema, stores them in SQLite, runs detection rules written in YAML, and serves the resulting alerts, with their evidence and an analyst workflow, over an HTTP API.
+A small SIEM for SSH auth logs and SSH honeypot logs. It parses logs into one event schema, stores them in SQLite, runs detection rules written in YAML, and serves the resulting alerts, with their evidence and an analyst workflow, over an HTTP API.
 
-> **Status: MVP, with live detection.** The whole path works on simulated data: parse, store, locate, detect, score against ground truth, and serve, either as a one-off replay or continuously as a log file grows. It has a local dashboard for working through alerts. A honeypot is collecting real data for a later stage.
+> **Status: MVP, with live detection.** The whole path works on simulated data: parse, store, locate, detect, score against ground truth, and serve, either as a one-off replay or continuously as a log file grows. It has a local dashboard for working through alerts. Logs from a Cowrie honeypot go through the same pipeline, with their own parser and rules; the honeypot rules have not been measured the way the SSH rules have.
 
 ```
  log file -> parser -> SQLite event store -> location enrichment -> rule engine -> alert store -> HTTP API -> dashboard
@@ -75,20 +75,30 @@ Then the whole pipeline, one step at a time:
 
 It prints each alert as it opens and each time it grows. It survives log rotation, resumes where it stopped after a restart, and continues an attack already in progress as the same alert. Stop it with Ctrl+C.
 
+**Honeypot data.** A [Cowrie](https://github.com/cowrie/cowrie) honeypot logs one JSON record per line. Those go through the same steps with `--source cowrie`, and need no `--year` because their timestamps are complete:
+
+```bash
+.venv/bin/python -m siftlog.ingest ~/honeypot-logs/cowrie.json* --source cowrie --db data/honeypot.db --show-ignored
+.venv/bin/python -m siftlog.engine --db data/honeypot.db --rules rules --save
+.venv/bin/python -m siftlog.api --db data/honeypot.db --rules rules --open
+```
+
+Besides logins, a honeypot records what a visitor did next, so there are three more event types: `connection`, `command` and `file_transfer`. `--show-ignored` lists what Cowrie logged that Siftlog does not turn into events. `--ignore-ip` leaves out your own address, so your test logins do not raise alerts about you. Keep real logs, and databases made from them, out of the repository: `data/` is git-ignored.
+
 To reproduce the results tables: `.venv/bin/python -m siftlog.evaluate --published`.
 
 ## The dashboard
 
 `python -m siftlog.api … --open` starts the server and opens `http://127.0.0.1:8000/dashboard/` in your browser. It is one page of plain HTML and JavaScript served by the API itself: no build step, nothing loaded from the internet.
 
-- **Overview:** counts, alerts by rule and by day, and the busiest sources of failed logins, which is where a slow attacker shows up even when no rule fired.
+- **Overview:** counts, alerts by rule and by day, events by type, and the busiest sources of failed logins, which is where a slow attacker shows up even when no rule fired.
 - **Alerts:** filter, open one to see the log lines behind it, and acknowledge, close or reopen it with a note.
-- **Events:** search stored events by address, username or type.
+- **Events:** search stored events by address, username or type. A honeypot event shows the part that matters (the command typed, the password tried, the file and its hash) with the full log line as a tooltip.
 - **Commands:** every command for running Siftlog and its honeypot, with this machine's own values filled in and a copy button. The same list, with placeholders, is in [docs/commands.md](docs/commands.md).
 
 **Signing in.** The server prints a link ending in `#token=…` that opens the dashboard already signed in. The part after `#` never leaves your browser, and the page removes it from the address bar at once. The token is kept for that tab only.
 
-**Your honeypot.** Put its address in a file named `siftlog.local.json` in the project folder, for example `{"honeypot_host": "192.0.2.10"}`. That file is git-ignored. The Overview then offers a *Check now* button that reports whether the honeypot and your admin login are answering, and the honeypot commands become ready to paste.
+**Your honeypot.** Put its address in a file named `siftlog.local.json` in the project folder, for example `{"honeypot_host": "192.0.2.10"}`. That file is git-ignored. The Overview then offers a *Check now* button that reports whether the honeypot and your admin login are answering, and the honeypot commands become ready to paste. Add `"own_addresses": ["203.0.113.5"]` with the address you connect from, and the command that loads honeypot logs leaves your own visits out.
 
 ## The API
 
@@ -144,13 +154,14 @@ mitre: [T1110.003]
 
 - **`event_count`** fires on N matching events in the window; **`value_count`** on N *distinct values* of one field.
 - **`temporal_ordered`** fires when a list of `steps` is satisfied in order, such as five failures and then a success. **`impossible_travel`** fires when two located logins for one user are too far apart for the time between them. See [`rules/`](rules/) for an example of each.
+- **A rule names the source it reads.** The `ssh-*` rules read `sshd` events and the `honeypot-*` rules read `cowrie` events. They are kept apart on purpose: on a honeypot nearly every login succeeds and every visitor is hostile, so a rule tuned for a real server would either stay silent or fire on everything.
 - **Windows slide.** They end at the newest event, so an attack straddling a clock boundary is still caught.
 - **One attack is one alert.** An alert stays open while its condition holds and closes after a cooldown (default: the timespan). A later burst opens a new one.
 - **Validation is strict.** An unknown key is an error, so a typo stops the engine rather than producing a rule that never fires.
 
 ## Threat model
 
-**Detects:** SSH brute force, password spraying, credential stuffing, a password guess that succeeded, and logins from impossibly distant places.
+**Detects:** SSH brute force, password spraying, credential stuffing, a password guess that succeeded, and logins from impossibly distant places. On honeypot data: files brought onto the honeypot, commands run on it, and one address trying many accounts.
 
 **Does not cover:**
 
@@ -162,7 +173,7 @@ mitre: [T1110.003]
 
 **How Siftlog protects itself.** Everything in a log line is attacker-controlled, so:
 
-- **Parsing.** Patterns are anchored at the end of the line, so a username that looks like log syntax cannot spoof the source address. Log content is never evaluated or passed to a shell. Lines are capped at 64 KiB, invalid UTF-8 is tolerated, and lines that do not parse are kept as dead letters instead of dropped.
+- **Parsing.** Patterns are anchored at the end of the line, so a username that looks like log syntax cannot spoof the source address. Honeypot records are JSON, read with the standard decoder: field types are checked, attacker-typed values are length-bounded, and nothing is taken from a field it does not belong to. Log content is never evaluated or passed to a shell. Lines are capped at 64 KiB, invalid UTF-8 is tolerated, and lines that do not parse are kept as dead letters instead of dropped.
 - **Storage.** Every query is parameterised, and column names never come from input.
 - **Rules.** Loaded with `yaml.safe_load`, so a rule file cannot construct Python objects.
 - **Engine.** Evidence is capped per alert, idle state is dropped, and each rule tracks a capped number of groups, forgetting the least recently active first. One attacker cycling through usernames cannot grow memory without bound.
@@ -184,8 +195,10 @@ mitre: [T1110.003]
 | 5 | Alert store with analyst workflow + HTTP API (**MVP**) | done |
 | 6 | Live detection: streaming engine + log follower | done |
 | 7 | Local dashboard (plain HTML and JavaScript, no build step) | done |
-| 8 | Real data + web log parser | not started |
+| 8 | Honeypot data: Cowrie parser, three honeypot rules, own-address filter | done |
 | 9 | Sigma rule import (stretch) | not started |
+
+The original plan also had a web log parser in stage 8. It was left out: the honeypot is SSH-only, so there is no real web data to build it against.
 
 ## Safety
 

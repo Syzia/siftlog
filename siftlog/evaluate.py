@@ -30,6 +30,7 @@ from siftlog.enrich import TableGeoResolver, enrich
 from siftlog.events import Event, make_event_id
 from siftlog.ingest import file_identity, iter_file_lines
 from siftlog.parsers import SshdParser
+from siftlog.parsers.sshd import SOURCE as SIMULATED_SOURCE
 from siftlog.simulator import FAKE_GEO, ScenarioLabel, simulate
 from siftlog.store import EventStore
 
@@ -84,7 +85,18 @@ def file_event_scenarios(log_path: str, labels_path: str, source_id: Optional[st
     }
 
 
+def scored_rules(rules: Sequence[Rule]) -> List[Rule]:
+    """The rules a simulation can say anything about: those able to read what the simulator writes.
+
+    A rule that only reads another source (the ``honeypot-*`` rules) can never
+    fire here. Scoring it would add a row of zeros that looks like a result.
+    """
+    return [rule for rule in rules if rule.reads(SIMULATED_SOURCE)]
+
+
 def evaluate(rules: Sequence[Rule], datasets: Iterable[Dataset]) -> ScoreReport:
+    """Score ``rules`` over ``datasets``. Rules that cannot read simulated events are left out."""
+    rules = scored_rules(rules)
     rule_ids = [rule.id for rule in rules]
     return merge(
         [
@@ -168,10 +180,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         rules = load_rules(args.rules)
     except (RuleError, OSError) as exc:
         parser.error(str(exc))
+    left_out = [rule.id for rule in rules if not rule.reads(SIMULATED_SOURCE)]
+    rules = scored_rules(rules)
     datasets = [simulated_dataset(seed) for seed in range(1, args.seeds + 1)]
     report = evaluate(rules, datasets)
     print(f"Evaluated {len(rules)} rule(s) over {args.seeds} simulations "
-          f"({sum(len(d.events) for d in datasets)} events).\n")
+          f"({sum(len(d.events) for d in datasets)} events).")
+    if left_out:
+        print(f"Left out {len(left_out)} rule(s) that do not read {SIMULATED_SOURCE} events: {', '.join(left_out)}.")
+    print()
     print(report.to_markdown())
     for spec in args.sweep:
         rule_id, _, values = spec.partition(":")

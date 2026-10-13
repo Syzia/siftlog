@@ -46,6 +46,34 @@
 
   const badge = (kind, value) => h("span", { class: `badge ${kind}-${value}` }, value);
 
+  // The last three only come from a honeypot: a real sshd does not log what a user types.
+  const EVENT_TYPES = [
+    ["auth_failure", "Failed login"], ["auth_success", "Successful login"], ["invalid_user", "Unknown username"],
+    ["connection", "Connection"], ["command", "Command"], ["file_transfer", "File transfer"],
+  ];
+  const typeName = (type) => (EVENT_TYPES.find(([value]) => value === type) || [type, type])[1];
+
+  // What the "Log line" column shows. A honeypot's line is a long JSON record, so the
+  // part a person wants is picked out of it; the full line is the cell's tooltip.
+  // Every value here was typed by an attacker. It is returned as a string and shown as text.
+  function logLine(event) {
+    const extra = event.extra || {};
+    const text = (value) => (typeof value === "string" ? value : "");
+    if (event.source !== "cowrie") return event.raw;
+    if (event.event_type === "command") return "$ " + text(extra.input);
+    if (event.event_type === "connection") return "connected";
+    if (event.event_type === "file_transfer") {
+      const what = text(extra.filename) || text(extra.url);
+      const failed = event.outcome === "failure" ? " failed" : "";
+      return `${text(extra.direction) || "transfer"}${failed}: ${what}` + (text(extra.shasum) ? `  sha256 ${extra.shasum}` : "");
+    }
+    if (typeof extra.password === "string") return "password: " + extra.password;
+    if (typeof extra.fingerprint === "string") return "key: " + extra.fingerprint;
+    return event.raw;
+  }
+
+  const logCell = (event) => h("td", { class: "mono raw", title: event.raw }, logLine(event));
+
   function table(headers, rows, emptyText) {
     if (!rows.length) return h("p", { class: "muted" }, emptyText || "Nothing to show.");
     return h(
@@ -218,6 +246,15 @@
               h("td", { class: "num" }, source.failures.toLocaleString()))),
             "No failed logins stored."
           )),
+        h("div", { class: "panel" }, h("h2", null, "Events by type"),
+          table(
+            [{ label: "Type" }, { label: "Events", num: true }],
+            Object.entries(stats.events.by_type).sort((a, b) => b[1] - a[1]).map(([type, count]) =>
+              h("tr", { class: "clickable", onclick: () => openEventsFor("", type) },
+                h("td", null, typeName(type)),
+                h("td", { class: "num" }, count.toLocaleString()))),
+            "No events stored."
+          )),
         h("div", { class: "panel" }, h("h2", null, "Alerts by day they started"), dayBars)
       )
     );
@@ -344,10 +381,10 @@
       table([{ label: "When" }, { label: "Type" }, { label: "User" }, { label: "Address" }, { label: "Log line" }],
         detail.evidence.map((event) => h("tr", null,
           h("td", { class: "nowrap" }, when(event.timestamp)),
-          h("td", null, event.event_type),
+          h("td", null, typeName(event.event_type)),
           h("td", { class: "mono" }, event.username),
           h("td", { class: "mono" }, event.src_ip, event.geo && event.geo.city ? h("div", { class: "muted small" }, event.geo.city) : null),
-          h("td", { class: "mono raw" }, event.raw))),
+          logCell(event))),
         "The evidence events are no longer stored.")));
   }
 
@@ -366,8 +403,7 @@
       field("e-address", "Address"),
       field("e-user", "Username"),
       h("label", null, "Type", h("select", { id: "e-type" },
-        [["", "Any type"], ["auth_failure", "Failed login"], ["auth_success", "Successful login"], ["invalid_user", "Unknown username"]]
-          .map(([value, text]) => h("option", { value }, text)))),
+        [["", "Any type"]].concat(EVENT_TYPES).map(([value, text]) => h("option", { value }, text)))),
       h("label", { class: "inline" }, h("input", { id: "e-newest", type: "checkbox", checked: true }), "Newest first"),
       h("button", { type: "submit", class: "primary" }, "Search"));
     $("event-filters").addEventListener("submit", (event) => { event.preventDefault(); run(loadEvents); });
@@ -386,19 +422,19 @@
       table([{ label: "When" }, { label: "Type" }, { label: "User" }, { label: "Address" }, { label: "Count", num: true }, { label: "Log line" }],
         page.events.map((event) => h("tr", null,
           h("td", { class: "nowrap" }, when(event.timestamp)),
-          h("td", null, event.event_type),
+          h("td", null, typeName(event.event_type)),
           h("td", { class: "mono" }, event.username),
           h("td", { class: "mono" }, event.src_ip),
           h("td", { class: "num" }, event.count),
-          h("td", { class: "mono raw" }, event.raw))),
+          logCell(event))),
         "No events match.")));
   }
 
-  function openEventsFor(address) {
+  function openEventsFor(address, type) {
     buildEventFilters();
     $("e-address").value = address;
     $("e-user").value = "";
-    $("e-type").value = "";
+    $("e-type").value = type || "";
     show("events");
   }
 

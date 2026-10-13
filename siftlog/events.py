@@ -12,6 +12,11 @@ AUTH_SUCCESS = "auth_success"
 # sshd usually logs a "Failed password" line for the same attempt, and counting
 # both would double the attempt.
 INVALID_USER = "invalid_user"
+# What a visitor did beyond logging in. Only a honeypot sees these: a real sshd
+# does not log the commands a user types or the files they transfer.
+CONNECTION = "connection"
+COMMAND = "command"
+FILE_TRANSFER = "file_transfer"
 
 OUTCOME_SUCCESS = "success"
 OUTCOME_FAILURE = "failure"

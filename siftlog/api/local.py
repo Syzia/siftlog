@@ -12,11 +12,12 @@ Every value is checked before it is put into a command. These are commands a
 person will paste into a shell, so a value containing quotes, ``;`` or ``$``
 must be refused, not interpolated.
 """
+import ipaddress
 import json
 import os
 import re
 from dataclasses import dataclass, fields
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 LOCAL_CONFIG = "siftlog.local.json"
 COMMANDS_FILE = os.path.join(os.path.dirname(__file__), "static", "commands.json")
@@ -44,9 +45,28 @@ class LocalConfig:
     honeypot_key: str = "~/.ssh/honeypot_ed25519"
     honeypot_dir: str = "/home/cowrie/my-honeypot"
     honeypot_logs: str = "~/honeypot-logs"  # where copies of its logs go on this machine
+    # Addresses you connect to the honeypot from. Your own test logins are left out of the
+    # honeypot data, so they do not raise alerts about you.
+    own_addresses: Tuple[str, ...] = ()
+
+
+def _address(value: Any) -> str:
+    """An address or network, rewritten in its standard form (which only has safe characters)."""
+    if not isinstance(value, str):
+        raise LocalConfigError(f"own_addresses must hold IP addresses or networks as strings, got {value!r}")
+    try:
+        if "/" in value:
+            return str(ipaddress.ip_network(value, strict=False))
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        raise LocalConfigError(f"own_addresses: {value!r} is not an IP address or network") from None
 
 
 def _check(name: str, value: Any) -> Any:
+    if name == "own_addresses":
+        if not isinstance(value, list):
+            raise LocalConfigError('own_addresses must be a list, such as ["203.0.113.5"]')
+        return tuple(_address(item) for item in value)
     if name == "honeypot_port":
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
             raise LocalConfigError(f"{name} must be a port number between 1 and 65535")
@@ -91,6 +111,8 @@ def command_variables(config: LocalConfig, project_dir: Optional[str], db: str, 
         "honeypot_key": config.honeypot_key,
         "honeypot_dir": config.honeypot_dir,
         "honeypot_logs": config.honeypot_logs,
+        # Empty when no address is configured, so the command is still complete without it.
+        "ignore_own": "".join(f" --ignore-ip {address}" for address in config.own_addresses),
     }
 
 

@@ -71,8 +71,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             from siftlog.evaluate import file_event_scenarios
 
             event_scenarios = file_event_scenarios(args.log, args.labels)
+        from siftlog.evaluate import SIMULATED_SOURCE, scored_rules
+
+        # Labels describe simulated sshd traffic, so only rules that can read it are scored.
+        scored = [rule.id for rule in scored_rules(rules)]
         print()
-        print(score(load_labels(args.labels), alerts, [rule.id for rule in rules], event_scenarios).to_markdown())
+        print(score(load_labels(args.labels), alerts, scored, event_scenarios).to_markdown())
+        left_out = [rule.id for rule in rules if rule.id not in scored]
+        if left_out:
+            print(f"Not scored ({len(left_out)} rule(s) that do not read {SIMULATED_SOURCE} events): {', '.join(left_out)}.")
     return 0
 
 

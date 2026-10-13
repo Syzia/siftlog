@@ -299,28 +299,63 @@ Cowrie's docs also have an "Updating Cowrie" section. Read it before leaving the
 
 ## 11. Getting logs to Siftlog (stage 8)
 
-Pull logs to a folder outside the repo:
+Three steps, all on your Mac. The dashboard's Commands tab has them with your own values filled in.
+
+**1. Copy the logs** to a folder outside the repo. It only fetches what is new, so repeat it whenever you want fresh data:
 
 ```bash
-rsync -av -e "ssh -i ~/.ssh/honeypot_ed25519 -p 22222" root@<IP>:/home/cowrie/my-honeypot/var/log/cowrie/ ~/honeypot-logs/
+mkdir -p ~/honeypot-logs && rsync -av -e "ssh -i ~/.ssh/honeypot_ed25519 -p 22222" root@<IP>:/home/cowrie/my-honeypot/var/log/cowrie/ ~/honeypot-logs/
 ```
 
-Per the Cowrie docs, every JSON event carries `eventid`, `message`, `sensor`, `timestamp` (ISO 8601, UTC), `session` and `src_ip`. The ones Siftlog cares about:
+The folder ends up with `cowrie.json` (today) and the matching `cowrie.log` text file. Cowrie starts a new pair each night and renames the old ones with their date. Siftlog reads the JSON ones.
 
-| `eventid` | Extra fields |
-|-----------|--------------|
-| `cowrie.session.connect` | `src_port`, `dst_ip`, `dst_port` |
-| `cowrie.login.failed` / `cowrie.login.success` | `username`, `password` (or `fingerprint`, `key`, `type` for public-key attempts) |
-| `cowrie.command.input` | `input` |
-| `cowrie.session.file_download` | `url`, `outfile`, `shasum` |
+**2. Parse them** into a database of their own, in the git-ignored `data/` folder:
 
-These map onto `auth_failure` and `auth_success` events. There is no Cowrie parser yet; that is the first task of stage 8.
+```bash
+cd <path to the siftlog folder> && .venv/bin/python -m siftlog.ingest ~/honeypot-logs/cowrie.json* --source cowrie --db data/honeypot.db --show-ignored --ignore-ip <YOUR_OWN_IP>
+```
 
-Two things the first hour of real traffic showed, which the parser and rules need to allow for:
+Safe to repeat: lines already stored are skipped, including after Cowrie's nightly rename of `cowrie.json`. `--ignore-ip` leaves out your own test logins. Without it, expect an alert about yourself.
 
-- **Almost every login succeeds.** Cowrie lets most guesses in, so this data has very few failures. Rules that count failed logins will be quiet; the signals here are successful logins from many addresses, the commands typed, and uploads.
-- **Uploads are an event of their own**, `cowrie.session.file_upload`, carrying `filename`, `outfile` and `shasum`. The first one captured was a 30 MB file named `sshd`: malware masquerading as the SSH daemon (MITRE ATT&CK T1036.005).
-- `dst_port` is 2222, not 22, because of the redirect in step 7.
+**3. Run the rules and look:**
+
+```bash
+cd <path to the siftlog folder> && .venv/bin/python -m siftlog.engine --db data/honeypot.db --rules rules --save
+cd <path to the siftlog folder> && .venv/bin/python -m siftlog.api --db data/honeypot.db --rules rules --port 8010 --open
+```
+
+### What becomes an event
+
+Every Cowrie record carries `eventid`, `timestamp` (ISO 8601, UTC), `session`, `src_ip` and `sensor`.
+
+| Cowrie `eventid` | Siftlog event | Kept from the record |
+|------------------|---------------|----------------------|
+| `cowrie.session.connect` | `connection` | |
+| `cowrie.login.failed` / `cowrie.login.success` | `auth_failure` / `auth_success` | `username`, `password` (or key `fingerprint`) |
+| `cowrie.command.input` | `command` | `input` |
+| `cowrie.session.file_upload` | `file_transfer` | `filename`, `shasum` |
+| `cowrie.session.file_download` (and `.failed`) | `file_transfer` | `url`, `shasum` |
+
+Everything else is ignored and counted: `--show-ignored` prints how many of each. If one of those counts turns out to be interesting, that is the cue to map it.
+
+### What the rules look for
+
+A honeypot is not a server with users, and two things about its data shape the rules:
+
+- **Almost every login succeeds.** Cowrie lets most guesses in, so there are very few failures. The `ssh-*` rules, which count failures, do not read this data at all.
+- **Every visitor is hostile.** An alert per login would be noise. The rules pick out the visitors who did something after getting in.
+
+| Rule | Fires when one address | Severity |
+|------|------------------------|----------|
+| `honeypot-file-transfer` | uploads a file, or makes the honeypot download one (failed downloads included) | high |
+| `honeypot-shell-commands` | runs any command after logging in | medium |
+| `honeypot-credential-sweep` | tries five or more usernames within ten minutes | low |
+
+One visit is one alert. The same address coming back hours later is a new one.
+
+The first upload captured was a 30 MB file named `sshd`: malware masquerading as the SSH daemon (MITRE ATT&CK T1036.005). `dst_port` in every record is 2222, not 22, because of the redirect in step 7.
+
+**Passwords are in this data on purpose.** They are attackers' guesses, and the list of what gets tried is one of the points of running a honeypot. It is also why the copied logs and `data/honeypot.db` must stay out of git.
 
 ## 12. Teardown
 

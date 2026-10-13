@@ -88,8 +88,11 @@ class EndToEndFileTests(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             engine_cli(["--db", self.db, "--rules", RULES_DIR, "--labels", self.labels_path, "--log", self.log])
-        self.assertIn("7 alert(s) from 5 rule(s)", out.getvalue())
+        self.assertIn("7 alert(s) from 8 rule(s)", out.getvalue())
         self.assertIn("London -> Sydney", out.getvalue())
+        # The honeypot rules cannot fire on sshd data, so they are named, not given a row of zeros.
+        self.assertNotIn("| `honeypot-", out.getvalue())
+        self.assertIn("Not scored (3 rule(s) that do not read sshd events): honeypot-", out.getvalue())
 
     def test_travel_rule_sees_nothing_until_events_are_located(self):
         alerts, _ = self.run_engine()  # no enrichment step

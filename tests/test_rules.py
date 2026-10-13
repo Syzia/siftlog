@@ -135,6 +135,21 @@ class NewRuleTypeTests(unittest.TestCase):
         self.assertEqual(rule.steps[0].filter, {"event_type": ("auth_failure",)})
         self.assertEqual(rule.filter, {"source": ("sshd",)})  # the part shared by every step
 
+    def test_which_sources_a_rule_reads(self):
+        anything = parse_rule(base())
+        self.assertTrue(anything.reads("sshd") and anything.reads("cowrie"))  # no source named: reads them all
+        one = parse_rule(base(filter={"event_type": "auth_failure", "source": "cowrie"}))
+        self.assertEqual((one.reads("cowrie"), one.reads("sshd")), (True, False))
+        two = parse_rule(base(filter={"source": ["sshd", "cowrie"]}))
+        self.assertTrue(two.reads("sshd") and two.reads("cowrie"))
+        # A sequence reads a source if any of its steps could be met by it.
+        steps = [{"filter": {"event_type": "auth_failure", "source": "cowrie"}}, {"filter": {"event_type": "auth_success"}}]
+        self.assertTrue(parse_rule(sequence(steps=steps)).reads("sshd"))
+        only = [dict(step, filter=dict(step["filter"], source="cowrie")) for step in steps]
+        self.assertEqual((parse_rule(sequence(steps=only)).reads("sshd"), parse_rule(sequence(steps=only)).reads("cowrie")),
+                         (False, True))
+        self.assertFalse(parse_rule(sequence(filter={"source": "cowrie"})).reads("sshd"))
+
     def test_impossible_travel_numbers(self):
         rule = parse_rule(travel(min_distance_km=100.5))
         self.assertEqual((rule.type, rule.max_speed_kmh, rule.min_distance_km), (IMPOSSIBLE_TRAVEL, 900.0, 100.5))
@@ -194,7 +209,13 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(set(rules), {
             "ssh-brute-force", "ssh-password-spray", "ssh-credential-stuffing",
             "ssh-success-after-failures", "ssh-impossible-travel",
+            "honeypot-file-transfer", "honeypot-shell-commands", "honeypot-credential-sweep",
         })  # fmt: skip
+        # Every shipped rule names the source it reads, so sshd rules and honeypot rules never mix.
+        self.assertEqual({rule.id.split("-")[0]: rule.filter["source"] for rule in rules.values()},
+                         {"ssh": ("sshd",), "honeypot": ("cowrie",)})
+        self.assertEqual(sorted(r.id for r in rules.values() if r.reads("cowrie")),
+                         ["honeypot-credential-sweep", "honeypot-file-transfer", "honeypot-shell-commands"])
         sequence, travel = rules["ssh-success-after-failures"], rules["ssh-impossible-travel"]
         self.assertEqual((sequence.type, sequence.group_by), (TEMPORAL_ORDERED, ("src_ip", "username")))
         self.assertEqual([(s.filter["event_type"], s.threshold) for s in sequence.steps],

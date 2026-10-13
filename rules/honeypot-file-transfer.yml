@@ -1,0 +1,18 @@
+id: honeypot-file-transfer
+title: File brought onto the honeypot
+description: >
+  A visitor uploaded a file, or told the honeypot to download one. This is the
+  moment an intrusion stops being a login and becomes an attempt to install
+  something. Failed downloads count too: the address they tried to fetch from
+  is worth knowing even when it was already dead. Reads honeypot (Cowrie)
+  events only; a real sshd does not log file transfers.
+severity: high
+type: event_count
+filter:
+  source: cowrie
+  event_type: file_transfer
+group_by: [src_ip]
+timespan: 1h
+condition:
+  gte: 1
+mitre: [T1105]
