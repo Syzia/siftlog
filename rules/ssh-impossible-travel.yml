@@ -1,0 +1,17 @@
+id: ssh-impossible-travel
+title: SSH impossible travel
+description: >
+  Two successful logins for one account from places too far apart for the time
+  between them. Needs events that have a location (see siftlog.enrich). GeoIP
+  is approximate and VPNs defeat it, so treat this as worth a look, not proof.
+  The minimum distance stops GeoIP jitter between nearby networks from firing.
+severity: high
+type: impossible_travel
+filter:
+  event_type: auth_success
+  source: sshd
+group_by: [username]
+timespan: 24h
+max_speed_kmh: 900
+min_distance_km: 100
+mitre: [T1078]

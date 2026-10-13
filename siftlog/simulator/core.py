@@ -14,12 +14,20 @@ Attack scenarios
     low_and_slow         one failure every ~2.5 minutes for 6 hours. A real attack
                          that stays under default thresholds: expect_alert is
                          False and it is a documented miss, not a bug.
+    brute_force_success  25 failures against one account, then a successful login.
+                         Should fire two rules: ssh-brute-force (keyed on the
+                         address) and ssh-success-after-failures (address + user).
 
 Benign scenarios (must produce no alert)
     typo_benign          a user mistypes a password 1-3 times, then succeeds
     nat_office           15 real users behind one NAT'd IP, 6 of them with a typo
     legit_travel         London login, then New York 14 hours later
     monitor_probe        a monitoring check failing publickey once a minute
+    vpn_hop              a real user logs in from London, then ten minutes later
+                         through a VPN exit in New York. Benign, but by location
+                         alone it is indistinguishable from stolen credentials, so
+                         ssh-impossible-travel fires. A documented FALSE POSITIVE:
+                         the mirror image of low_and_slow.
 
 Only RFC 5737 documentation addresses are used, so no real IP can leak into a
 fixture. Output is always UTC.
@@ -45,7 +53,7 @@ _OFFICE_USERS = (
 )  # fmt: skip
 _BASELINE_USERS = ("dave", "erin", "deploy", "svc-backup")
 VALID_USERS = frozenset(
-    {"root", "alice", "bob", "carol", "nagios"} | set(_OFFICE_USERS) | set(_BASELINE_USERS)
+    {"root", "alice", "bob", "carol", "nagios", "ops", "vera"} | set(_OFFICE_USERS) | set(_BASELINE_USERS)
 )
 
 # Names scanners try. None of these are valid accounts on the simulated host.
@@ -76,6 +84,16 @@ class ScenarioLabel:
     start: datetime
     end: datetime
     note: str = ""
+    # Further (rule id, group key) alerts this scenario should raise, when one
+    # attack is expected to trip more than one rule.
+    also_expected: Tuple[Tuple[str, str], ...] = ()
+
+    @property
+    def expected_alerts(self) -> Tuple[Tuple[str, str], ...]:
+        """Every (rule id, group key) a correct rule set should raise for this scenario."""
+        if not self.expect_alert or self.rule_hint is None or self.group_key is None:
+            return ()
+        return ((self.rule_hint, self.group_key),) + self.also_expected
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -88,6 +106,7 @@ class ScenarioLabel:
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
             "note": self.note,
+            "also_expected": [list(pair) for pair in self.also_expected],
         }
 
     @classmethod
@@ -102,6 +121,7 @@ class ScenarioLabel:
             start=datetime.fromisoformat(str(data["start"])),
             end=datetime.fromisoformat(str(data["end"])),
             note=str(data.get("note", "")),
+            also_expected=tuple((str(r), str(k)) for r, k in data.get("also_expected", ())),  # type: ignore[union-attr]
         )
 
 
@@ -129,6 +149,7 @@ class _Result:
     is_attack: bool
     expect_alert: bool
     note: str = ""
+    also_expected: Tuple[Tuple[str, str], ...] = ()
 
 
 class _Ctx:
@@ -265,6 +286,21 @@ def _low_and_slow(ctx: _Ctx, t0: datetime) -> _Result:
     )  # fmt: skip
 
 
+def _brute_force_success(ctx: _Ctx, t0: datetime) -> _Result:
+    ip = ctx.attacker_ip()
+    recs: List[_Rec] = []
+    t = t0
+    for _ in range(25):
+        recs += _failed_attempt(ctx, t, ip, "ops")
+        t += _secs(ctx.rng.randint(1, 4))
+    recs += _success_login(ctx, t, ip, "ops")
+    return _Result(
+        recs, ip, "ssh-brute-force", is_attack=True, expect_alert=True,
+        note="the guess worked: the login after the failures is the alert that matters",
+        also_expected=(("ssh-success-after-failures", f"{ip}|ops"),),
+    )  # fmt: skip
+
+
 # --- benign scenarios -------------------------------------------------------
 
 
@@ -308,6 +344,13 @@ def _monitor_probe(ctx: _Ctx, t0: datetime) -> _Result:
                    note="five failures per five minutes, never near the threshold")  # fmt: skip
 
 
+def _vpn_hop(ctx: _Ctx, t0: datetime) -> _Result:
+    recs = _success_login(ctx, t0, LONDON_IP, "vera")
+    recs += _success_login(ctx, t0 + timedelta(minutes=10), NEW_YORK_IP, "vera")
+    return _Result(recs, "vera", None, is_attack=False, expect_alert=False,
+                   note="documented false positive: a VPN makes a real user appear to teleport")  # fmt: skip
+
+
 _SCENARIOS: Dict[str, Callable[[_Ctx, datetime], _Result]] = {
     "brute_force": _brute_force,
     "password_spray": _password_spray,
@@ -318,6 +361,9 @@ _SCENARIOS: Dict[str, Callable[[_Ctx, datetime], _Result]] = {
     "nat_office": _nat_office,
     "legit_travel": _legit_travel,
     "monitor_probe": _monitor_probe,
+    # Added in stage 4. Kept last so the scenarios above generate exactly as before.
+    "brute_force_success": _brute_force_success,
+    "vpn_hop": _vpn_hop,
 }
 DEFAULT_SCENARIOS: Mapping[str, int] = {kind: 1 for kind in _SCENARIOS}
 
@@ -373,6 +419,7 @@ def simulate(
                     start=min(r.ts for r in result.recs),
                     end=max(r.ts for r in result.recs),
                     note=result.note,
+                    also_expected=result.also_expected,
                 )
             )
 

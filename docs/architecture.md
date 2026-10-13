@@ -84,6 +84,11 @@ GeoIP lookup via the offline MaxMind GeoLite2 database (no API calls, no rate li
 - Needs a free MaxMind account and licence key, and the database can't be redistributed. Keep it out of the repo and document how to fetch it.
 - CI and tests use a small fake lookup table (IP to coordinates) so they never depend on the real database.
 
+As built (stage 4):
+- **A resolver is anything with `lookup(ip)`.** `TableGeoResolver` serves the simulator's table; `MaxMindGeoResolver` adapts a GeoLite2-City reader. The reader is injected, so the record mapping is tested without the database. Opening a real `.mmdb` needs the optional `maxminddb` package and is the one line not exercised in CI.
+- **Enrichment is a separate pass over the store**, `python -m siftlog.enrich`, not part of ingest. A GeoIP database often arrives after the logs do, and re-ingesting cannot add a location because stored rows are never rewritten. The pass only touches events with no location, so it is safe to repeat.
+- **Events that cannot be located are left alone**, and are invisible to location rules.
+
 ### 5. Event Store
 SQLite with indexes on `(src_ip, timestamp)` and `(username, timestamp)`, since nearly every rule is a windowed query on those. Move to Postgres only if write volume or concurrency becomes a real problem.
 
@@ -104,7 +109,7 @@ Rule types are named after Sigma's correlation types (`event_count`, `value_coun
 |------|---------|---------|
 | `event_count` | N matching events within a window, per group | brute force |
 | `value_count` | N *distinct* values of a field within a window, per group | password spraying, credential stuffing |
-| `temporal` | Rule A then rule B for the same group within a window | failures streak then success |
+| `temporal_ordered` | Step A then step B, in order, for the same group within a window | failures streak then success |
 | `impossible_travel` | Two successes for one user too far apart for the elapsed time | stolen credentials |
 
 Example rules:
@@ -152,7 +157,7 @@ Engine runs in **streaming mode** (evaluate each new event against the state it 
 > **Corrected during stage 3.** The first draft said "while matching events keep arriving". That is wrong for any rule grouped by host: an internet-facing host always has auth failures, so the first stuffing alert would never close and would swallow every later attack. The episode has to follow the condition, not the event stream. A regression test covers it. There is at most one open alert per `(rule_id, group_key)`, so one attack produces one alert, not 500. Closing an alert means "handled", not "muted": if the attack is still running, the next match opens a fresh one.
 
 As built (stage 3):
-- **Replay engine** (`siftlog/engine/replay.py`) with `event_count` and `value_count`. `temporal` and `impossible_travel` are stage 4.
+- **Replay engine** (`siftlog/engine/replay.py`) with `event_count` and `value_count`. The other two types arrived in stage 4 (below).
 - **The window is `(t - timespan, t]`**, ending at the newest event. An event exactly one timespan old is outside it.
 - **`first_seen` is the earliest event in the window that triggered the alert**, and the evidence is that whole window plus everything that arrives while the condition holds. For a host-level rule this can predate the attack by up to one timespan.
 - **Evidence ids are capped at 1,000 per alert** (`evidence_truncated` says when). Counts stay exact. This bounds what one attacker can make a single alert hold.
@@ -160,6 +165,14 @@ As built (stage 3):
 - **Rule files are validated strictly and loaded with `yaml.safe_load`.** An unknown key is an error, so a typo such as `treshold` stops the engine instead of producing a rule that never fires.
 - **Alert ids are deterministic:** a hash of rule id, group key and `first_seen`.
 - **Scoring** (`siftlog/engine/scoring.py`) judges each alert on its own evidence, using the simulator's per-line labels: an alert is *false* only if most of its evidence is benign. Duplicates and "bonus" detections of unexpected attacks are counted separately. Measured results are in [results.md](results.md).
+
+As built (stage 4):
+- **`temporal_ordered`**, not plain `temporal`: Sigma's `temporal` is unordered, and "failures then success" needs order. A rule lists `steps`, each a filter and a count; an event counts towards one step only.
+- **Only an event that completes the sequence opens or extends an alert.** A stray failure after the successful login is not evidence. This also keeps a huge brute force from rescanning its window on every failure.
+- **`ssh-success-after-failures` groups by address *and* username.** Grouped by address alone it fires on a NAT'd office where several people mistype and somebody else logs in. Measured in [results.md](results.md).
+- **`impossible_travel`** compares each located login with the previous located login for the same user: flagged if they are at least `min_distance_km` apart and the implied speed exceeds `max_speed_kmh`. The minimum distance absorbs GeoIP jitter between neighbouring networks. The alert's `summary` gives places, distance and speed.
+- **One attack may expect several alerts.** A brute force that succeeds should trip both `ssh-brute-force` and `ssh-success-after-failures`, so labels carry a list of expected (rule, group key) pairs and recall is counted per expected alert.
+- **A documented false positive.** The simulator now contains a real user on a VPN, which the travel rule flags. It is the mirror image of the low-and-slow documented miss: a known wrong answer kept visible in the results instead of a flattering zero.
 
 ### 7. Alert Store
 ```

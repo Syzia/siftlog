@@ -4,7 +4,10 @@ import re
 import unittest
 from datetime import datetime, timezone
 
-from siftlog.simulator import DEFAULT_SCENARIOS, FAKE_GEO, simulate
+import os
+import tempfile
+
+from siftlog.simulator import DEFAULT_SCENARIOS, FAKE_GEO, load_labels, simulate, write_files
 
 DOC_NETS = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
 IP_IN_LINE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
@@ -39,6 +42,26 @@ class SimulatorTests(unittest.TestCase):
         for kind in ("brute_force", "password_spray", "credential_stuffing", "impossible_travel"):
             self.assertTrue(labels[kind].expect_alert)
             self.assertIsNotNone(labels[kind].rule_hint)
+
+    def test_an_attack_can_expect_more_than_one_alert(self):
+        label = {l.kind: l for l in simulate().labels}["brute_force_success"]
+        ip = label.group_key
+        self.assertEqual(label.expected_alerts,
+                         (("ssh-brute-force", ip), ("ssh-success-after-failures", f"{ip}|ops")))
+        plain = {l.kind: l for l in simulate().labels}["brute_force"]
+        self.assertEqual(plain.expected_alerts, (("ssh-brute-force", plain.group_key),))
+
+    def test_the_vpn_user_is_benign_and_expects_no_alert(self):
+        label = {l.kind: l for l in simulate().labels}["vpn_hop"]
+        self.assertEqual((label.is_attack, label.expect_alert, label.expected_alerts), (False, False, ()))
+        self.assertIn("false positive", label.note)
+
+    def test_labels_survive_being_written_and_read_back(self):
+        sim = simulate(seed=5)
+        with tempfile.TemporaryDirectory() as tmp:
+            log, labels = os.path.join(tmp, "s.log"), os.path.join(tmp, "s.json")
+            write_files(sim, log, labels)
+            self.assertEqual(load_labels(labels), sim.labels)
 
     def test_only_documentation_addresses_appear(self):
         for fmt in ("syslog", "iso"):

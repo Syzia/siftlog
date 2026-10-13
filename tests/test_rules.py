@@ -3,7 +3,15 @@ import tempfile
 import unittest
 from datetime import timedelta
 
-from siftlog.engine import EVENT_COUNT, VALUE_COUNT, RuleError, load_rules, parse_rule
+from siftlog.engine import (
+    EVENT_COUNT,
+    IMPOSSIBLE_TRAVEL,
+    TEMPORAL_ORDERED,
+    VALUE_COUNT,
+    RuleError,
+    load_rules,
+    parse_rule,
+)
 
 RULES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rules")
 
@@ -99,6 +107,72 @@ class ParseTests(unittest.TestCase):
         self.assertIn("r1", str(caught.exception))
 
 
+def sequence(**overrides):
+    rule = {
+        "id": "seq", "title": "A sequence", "type": "temporal_ordered",
+        "group_by": ["src_ip"], "timespan": "10m",
+        "steps": [{"filter": {"event_type": "auth_failure"}, "condition": {"gte": 5}},
+                  {"filter": {"event_type": "auth_success"}}],
+    }  # fmt: skip
+    rule.update(overrides)
+    return rule
+
+
+def travel(**overrides):
+    rule = {
+        "id": "trv", "title": "Travel", "type": "impossible_travel",
+        "group_by": ["username"], "timespan": "24h", "max_speed_kmh": 900,
+    }  # fmt: skip
+    rule.update(overrides)
+    return rule
+
+
+class NewRuleTypeTests(unittest.TestCase):
+    def test_temporal_ordered_steps(self):
+        rule = parse_rule(sequence(filter={"source": "sshd"}))
+        self.assertEqual(rule.type, TEMPORAL_ORDERED)
+        self.assertEqual([s.threshold for s in rule.steps], [5, 1])  # a step with no condition needs one event
+        self.assertEqual(rule.steps[0].filter, {"event_type": ("auth_failure",)})
+        self.assertEqual(rule.filter, {"source": ("sshd",)})  # the part shared by every step
+
+    def test_impossible_travel_numbers(self):
+        rule = parse_rule(travel(min_distance_km=100.5))
+        self.assertEqual((rule.type, rule.max_speed_kmh, rule.min_distance_km), (IMPOSSIBLE_TRAVEL, 900.0, 100.5))
+        self.assertEqual(parse_rule(travel()).min_distance_km, 0.0)
+
+    def test_malformed_new_rule_types_are_rejected(self):
+        step = {"filter": {"event_type": "auth_failure"}}
+        cases = {
+            "sequence without steps": {k: v for k, v in sequence().items() if k != "steps"},
+            "one step": sequence(steps=[step]),
+            "steps not a list": sequence(steps={"a": 1}),
+            "step without filter": sequence(steps=[step, {"condition": {"gte": 1}}]),
+            "step with empty filter": sequence(steps=[step, {"filter": {}}]),
+            "step with unknown key": sequence(steps=[step, dict(step, distinct="username")]),
+            "step with unknown field": sequence(steps=[step, {"filter": {"password": "x"}}]),
+            "step condition gt": sequence(steps=[step, dict(step, condition={"gt": 1})]),
+            "step condition field": sequence(steps=[step, dict(step, condition={"gte": 1, "field": "username"})]),
+            "step threshold zero": sequence(steps=[step, dict(step, condition={"gte": 0})]),
+            "condition on a sequence": sequence(condition={"gte": 5}),
+            "distinct on a sequence": sequence(distinct="username"),
+            "speed on a sequence": sequence(max_speed_kmh=900),
+            "travel without speed": {k: v for k, v in travel().items() if k != "max_speed_kmh"},
+            "zero speed": travel(max_speed_kmh=0),
+            "negative speed": travel(max_speed_kmh=-5),
+            "string speed": travel(max_speed_kmh="fast"),
+            "boolean speed": travel(max_speed_kmh=True),
+            "negative distance": travel(min_distance_km=-1),
+            "condition on travel": travel(condition={"gte": 1}),
+            "steps on travel": travel(steps=[step, step]),
+            "steps on a count rule": base(steps=[step, step]),
+            "speed on a count rule": base(max_speed_kmh=900),
+            "distance on a count rule": base(min_distance_km=10),
+        }
+        for name, data in cases.items():
+            with self.subTest(name), self.assertRaises(RuleError):
+                parse_rule(data, origin="test.yml")
+
+
 class LoadTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -117,7 +191,17 @@ class LoadTests(unittest.TestCase):
 
     def test_shipped_rules_load(self):
         rules = {rule.id: rule for rule in load_rules(RULES_DIR)}
-        self.assertEqual(set(rules), {"ssh-brute-force", "ssh-password-spray", "ssh-credential-stuffing"})
+        self.assertEqual(set(rules), {
+            "ssh-brute-force", "ssh-password-spray", "ssh-credential-stuffing",
+            "ssh-success-after-failures", "ssh-impossible-travel",
+        })  # fmt: skip
+        sequence, travel = rules["ssh-success-after-failures"], rules["ssh-impossible-travel"]
+        self.assertEqual((sequence.type, sequence.group_by), (TEMPORAL_ORDERED, ("src_ip", "username")))
+        self.assertEqual([(s.filter["event_type"], s.threshold) for s in sequence.steps],
+                         [(("auth_failure",), 5), (("auth_success",), 1)])
+        self.assertEqual((travel.type, travel.group_by, travel.max_speed_kmh, travel.min_distance_km),
+                         (IMPOSSIBLE_TRAVEL, ("username",), 900.0, 100.0))
+        self.assertEqual(travel.timespan, timedelta(hours=24))
         brute, spray, stuffing = rules["ssh-brute-force"], rules["ssh-password-spray"], rules["ssh-credential-stuffing"]
         self.assertEqual((brute.type, brute.group_by, brute.threshold, brute.timespan),
                          (EVENT_COUNT, ("src_ip",), 10, timedelta(minutes=5)))

@@ -193,6 +193,33 @@ class EventStore:
             self._conn.executemany(_INSERT_DEAD, rows)
         return self._conn.total_changes - before
 
+    def backfill_geo(self, resolver: Any) -> Tuple[int, int]:
+        """Locate events that have a source address but no location yet.
+
+        Returns (events located, distinct addresses located). Separate from
+        ingest on purpose: a GeoIP database often arrives after the logs do, and
+        re-ingesting cannot add a location because existing rows are never
+        rewritten. Only rows with no location are touched, so it is safe to repeat.
+        """
+        addresses = [
+            row[0]
+            for row in self._conn.execute(
+                "SELECT DISTINCT src_ip FROM events WHERE geo IS NULL AND src_ip IS NOT NULL"
+            )
+        ]
+        located = found = 0
+        with self._conn:
+            for address in addresses:
+                geo = resolver.lookup(address)
+                if geo is None:
+                    continue
+                cursor = self._conn.execute(
+                    "UPDATE events SET geo = ? WHERE src_ip = ? AND geo IS NULL", (_json(geo), address)
+                )
+                located += cursor.rowcount
+                found += 1
+        return located, found
+
     # --- reads ------------------------------------------------------------
 
     def query(

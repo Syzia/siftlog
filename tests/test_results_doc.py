@@ -7,6 +7,7 @@ from siftlog.evaluate import (
     PUBLISHED_SEEDS,
     PUBLISHED_SWEEPS,
     evaluate,
+    grouping_note,
     simulated_dataset,
     sweep_markdown,
     threshold_sweep,
@@ -17,17 +18,18 @@ STALE = "docs/results.md is out of date: run `python -m siftlog.evaluate --publi
 
 
 class ResultsDocTests(unittest.TestCase):
-    def test_every_published_table_is_reproducible(self):
+    def test_every_published_number_is_reproducible(self):
         with open(os.path.join(ROOT, "docs", "results.md"), encoding="utf-8") as fh:
             doc = fh.read()
-        rules = load_rules(os.path.join(ROOT, "rules"))
-        shipped = {rule.id: rule.threshold for rule in rules}
+        rules = {rule.id: rule for rule in load_rules(os.path.join(ROOT, "rules"))}
+        ordered = list(rules.values())
         datasets = [simulated_dataset(seed) for seed in range(1, PUBLISHED_SEEDS + 1)]
 
-        self.assertIn(evaluate(rules, datasets).to_markdown(), doc, STALE)
-        for rule_id, thresholds in PUBLISHED_SWEEPS:
-            table = sweep_markdown(rule_id, threshold_sweep(rules, rule_id, list(thresholds), datasets), shipped[rule_id])
+        self.assertIn(evaluate(ordered, datasets).to_markdown(), doc, STALE)
+        for rule_id, values in PUBLISHED_SWEEPS:
+            table = sweep_markdown(rules[rule_id], threshold_sweep(ordered, rule_id, list(values), datasets))
             self.assertIn(table, doc, f"{STALE} (sweep for {rule_id})")
+        self.assertIn(grouping_note(ordered, datasets), doc, STALE)
         self.assertIn(f"{sum(len(d.events) for d in datasets):,} events", doc, STALE)
 
 
