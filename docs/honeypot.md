@@ -4,6 +4,8 @@ Goal: a [Cowrie](https://docs.cowrie.org) SSH honeypot on an isolated VPS, colle
 
 Cowrie steps were checked against docs.cowrie.org on 2026-10-13. Steps marked **(not from Cowrie docs)** are standard Ubuntu/systemd practice that I could not confirm from Cowrie's own pages, so verify them on the box.
 
+Written for **Debian 12 (bookworm)** or **Ubuntu 24.04 LTS**. Cowrie's docs say their package list was last verified on Debian Bookworm, so prefer it when the plan offers it. The smallest plans (0.5 GB RAM) work with the swap file in step 2; the plan must include a public **IPv4** address, because internet-wide SSH scanning does not happen over IPv6.
+
 Placeholders: `<IP>` is the server's public address, `<MY_IP>` is your current public address, and `22222` is the admin SSH port (any high port works).
 
 ## Ground rules
@@ -34,6 +36,22 @@ ssh -i ~/.ssh/honeypot_ed25519 root@<IP>
 apt-get update && apt-get -y upgrade
 ```
 
+On a plan with less than 1 GB of RAM, add swap first so installs and traffic bursts cannot run the box out of memory **(not from Cowrie docs)**. Check whether swap already exists:
+
+```bash
+swapon --show
+```
+
+If that prints nothing, create a 1 GB swap file and make it permanent:
+
+```bash
+fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+```
+
+```bash
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
 ## 3. Check the host firewall (not from Cowrie docs)
 
 Vultr's Ubuntu images may ship with `ufw` enabled. A redirect to 2222 (step 7) is filtered *after* it happens, so the host firewall must allow the admin port and 2222.
@@ -47,6 +65,8 @@ If it says `active`:
 ```bash
 ufw allow 22222/tcp && ufw allow 2222/tcp && ufw allow 22/tcp
 ```
+
+If it says `inactive` or `command not found`, there is no host firewall and you can skip this step.
 
 ## 4. Move the real SSH server off port 22 (not from Cowrie docs)
 
@@ -76,7 +96,11 @@ ListenStream=22222
 systemctl daemon-reload && systemctl restart ssh.socket
 ```
 
-If it is not active, set `Port 22222` in `/etc/ssh/sshd_config` and run `systemctl restart ssh`.
+If it prints `inactive` (the normal case on Debian 12), set the port with a drop-in file instead. The main config includes this directory first, so no editor is needed:
+
+```bash
+echo 'Port 22222' > /etc/ssh/sshd_config.d/00-port.conf && sshd -t && systemctl restart ssh
+```
 
 Confirm it is listening:
 
