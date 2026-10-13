@@ -182,12 +182,31 @@ alert_events(alert_id, event_id)      -- evidence, one row per event
 ```
 Every alert links back to its evidence events. Analysts need to see why it fired.
 
+As built (stage 5):
+- **Detections are recomputed; decisions persist.** Replay is deterministic and alert ids are a hash of rule, group and `first_seen`, so re-running the engine reproduces the same alerts. `python -m siftlog.engine --save` makes the table match the latest full replay and never touches `status` or `note`.
+- **Closing means handled, not muted.** The one exception to the rule above: a *closed* alert that has gained activity since is reopened, by the actor `siftlog`, with the reason recorded. An acknowledged alert that grows stays acknowledged.
+- **Nothing an analyst touched is silently deleted.** If a rule edit means the latest replay no longer produces an alert, it is removed only if nobody acted on it. Otherwise it is kept and marked `superseded`, hidden from listings by default.
+- **`alert_history`** records every status change: when, from, to, by whom, and why. The API writes the actor `api`, because there is one shared token and no user accounts yet.
+- **`--save` requires a full replay.** A partial time range cannot tell "no longer produced" from "outside the range".
+- **Schema version 2.** A stage 4 database is upgraded in place, in one transaction, on first open.
+- Evidence is a join table with a position, so it comes back in the order the engine recorded it. Evidence events that have since been deleted are skipped rather than breaking the alert.
+
 ### 8. REST API (FastAPI)
 - `GET /alerts`, `GET /alerts/{id}` (with evidence)
 - `PATCH /alerts/{id}` (change status)
 - `GET /events?src_ip=&since=`
 - `GET /stats` (top IPs, alerts over time, by severity)
 - `GET /rules` (loaded rules and their hit counts)
+
+As built (stage 5):
+- **Every route except `GET /health` needs `Authorization: Bearer <token>`**, compared in constant time. The token comes from `SIFTLOG_API_TOKEN`; without it, one is generated for the run and printed once.
+- **Loopback by default.** The CLI refuses to bind anywhere else with a generated token, and warns that it speaks plain HTTP. TLS belongs to a reverse proxy.
+- **Inputs are typed and bounded:** page sizes from 1 to 1000, string lengths capped, statuses and severities are enumerations, unknown fields in a `PATCH` body are rejected. A timestamp with no offset is read as UTC.
+- **One SQLite connection per request, opened inside the handler.** FastAPI runs plain handlers in a thread pool, and a connection must not cross threads.
+- **JSON only**, with `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. Usernames and raw lines are attacker-controlled text returned as data; whatever renders them must escape them.
+- `GET /alerts/{id}` returns the alert, its evidence events (200 by default, up to 1000) and its history. `GET /stats` includes the busiest failing sources, which is how the low-and-slow attacker shows up even though no rule fires on it.
+- Interactive documentation is served at `/docs`, with the bearer scheme declared so its Authorize button works.
+- **Not built:** user accounts or roles, rate limiting, TLS, CORS for a browser front end (stage 7 will need it).
 
 ### 9. Dashboard (React, optional)
 - Alert queue with severity filter and status workflow

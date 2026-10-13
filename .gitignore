@@ -23,6 +23,7 @@ dist/
 *.sqlite3
 *.mmdb
 data/
+*.labels.json
 honeypot-logs/
 cowrie.json*
 !tests/fixtures/*.log
@@ -30,6 +31,9 @@ cowrie.json*
 # Dashboard
 node_modules/
 dashboard/dist/
+
+# Local preview config
+.claude/launch.json
 
 # OS / editor
 .DS_Store

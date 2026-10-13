@@ -18,19 +18,23 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Iterator, List, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
-from siftlog.events import DeadLetter, Event
+from siftlog.events import AUTH_FAILURE, DeadLetter, Event
+from siftlog.store._common import StoreError
+from siftlog.store._common import check_limit as _check_limit
+from siftlog.store._common import from_micros as _from_micros
+from siftlog.store._common import to_json as _json
+from siftlog.store._common import to_micros as _to_micros
+from siftlog.store.alerts import ALERT_SCHEMA, AlertStoreMixin
 
-SCHEMA_VERSION = 1
-
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-_MICROSECOND = timedelta(microseconds=1)
+# 1: events and dead letters. 2: adds alerts, their evidence and their status history.
+SCHEMA_VERSION = 2
 
 # byte_offset / repeat_count rather than offset / count: OFFSET is an SQL keyword
 # and COUNT is an aggregate, both confusing as bare column names.
-_SCHEMA = f"""
+_SCHEMA = """
 CREATE TABLE events (
     id           TEXT    NOT NULL UNIQUE,
     ts           INTEGER NOT NULL,
@@ -60,7 +64,6 @@ CREATE TABLE dead_letters (
     reason      TEXT    NOT NULL,
     PRIMARY KEY (source_id, byte_offset)
 );
-PRAGMA user_version = {SCHEMA_VERSION};
 """
 
 _COLUMNS = (
@@ -72,24 +75,6 @@ _INSERT_DEAD = (
     "INSERT OR IGNORE INTO dead_letters (source_id, byte_offset, raw, reason) VALUES (?,?,?,?)"
 )
 _ORDER = {False: "ORDER BY ts, source_id, byte_offset", True: "ORDER BY ts DESC, source_id DESC, byte_offset DESC"}
-
-
-class StoreError(Exception):
-    """The database is not one this version of Siftlog can safely use."""
-
-
-def _to_micros(dt: datetime) -> int:
-    if dt.tzinfo is None:
-        raise ValueError("datetime must be timezone-aware")
-    return (dt.astimezone(timezone.utc) - _EPOCH) // _MICROSECOND
-
-
-def _from_micros(micros: int) -> datetime:
-    return _EPOCH + timedelta(microseconds=micros)
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _event_row(e: Event) -> Tuple[Any, ...]:
@@ -146,26 +131,37 @@ def _where(
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
-class EventStore:
+class EventStore(AlertStoreMixin):
+    """Events, dead letters and alerts in one SQLite file. Alert methods are in alerts.py."""
+
     def __init__(self, path: str = ":memory:") -> None:
         self._conn = sqlite3.connect(path)
         if path != ":memory:":
             self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")  # deleting an alert removes its evidence and history
         self._init_schema()
 
     def _init_schema(self) -> None:
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
         if version == SCHEMA_VERSION:
             return
-        if version != 0:
-            raise StoreError(f"database schema is version {version}; this code expects {SCHEMA_VERSION}")
-        has_events = self._conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'events'"
-        ).fetchone()
-        if has_events:
-            raise StoreError("database already has an 'events' table but no schema version; refusing to use it")
-        self._conn.executescript(_SCHEMA)
+        if version > SCHEMA_VERSION:
+            raise StoreError(
+                f"database schema is version {version}, newer than this code ({SCHEMA_VERSION}); upgrade Siftlog"
+            )
+        script = ""
+        if version == 0:
+            has_events = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'events'"
+            ).fetchone()
+            if has_events:
+                raise StoreError("database already has an 'events' table but no schema version; refusing to use it")
+            script += _SCHEMA
+        # Versions 0 and 1 both lack the alert tables. One transaction, so a failed
+        # upgrade leaves the database exactly as it was.
+        script += ALERT_SCHEMA
+        self._conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
 
     def close(self) -> None:
         self._conn.close()
@@ -300,6 +296,38 @@ class EventStore:
     def dead_letter_count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) FROM dead_letters").fetchone()[0]
 
+    def alert_events(self, alert_id: str) -> List[Event]:
+        """The evidence behind an alert, in the order the engine recorded it."""
+        columns = ", ".join("e." + name.strip() for name in _COLUMNS.split(","))
+        return [
+            _row_event(row)
+            for row in self._conn.execute(
+                f"SELECT {columns} FROM alert_events a JOIN events e ON e.id = a.event_id "
+                "WHERE a.alert_id = ? ORDER BY a.position",
+                (alert_id,),
+            )
+        ]
+
+    def event_type_counts(self) -> Dict[str, int]:
+        return dict(
+            self._conn.execute("SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY event_type")
+        )
+
+    def top_sources(self, limit: int = 10, event_type: str = AUTH_FAILURE) -> List[Tuple[str, int]]:
+        """(address, weighted event count) for the busiest sources of one event type."""
+        return [
+            (row[0], row[1])
+            for row in self._conn.execute(
+                "SELECT src_ip, SUM(repeat_count) AS n FROM events WHERE event_type = ? AND src_ip IS NOT NULL "
+                "GROUP BY src_ip ORDER BY n DESC, src_ip LIMIT ?",
+                (event_type, _check_limit(limit)),
+            )
+        ]
+
+    def time_range(self) -> Tuple[Optional[datetime], Optional[datetime]]:
+        first, last = self._conn.execute("SELECT MIN(ts), MAX(ts) FROM events").fetchone()
+        return (None, None) if first is None else (_from_micros(first), _from_micros(last))
+
     # --- internals --------------------------------------------------------
 
     def _select(
@@ -319,8 +347,3 @@ class EventStore:
             params.append(_check_limit(limit))
         return sql, params
 
-
-def _check_limit(limit: int) -> int:
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-        raise ValueError("limit must be a non-negative integer")
-    return limit

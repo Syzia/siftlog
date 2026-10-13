@@ -30,7 +30,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="with --labels: the simulated log that was ingested, so each alert is "
         "scored on its own evidence instead of only on group and time",
     )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="store the alerts in the database for the API, keeping any decisions analysts have made",
+    )
     args = parser.parse_args(argv)
+    if args.save and (args.since or args.until):
+        parser.error(
+            "--save makes the stored alerts match everything the rules produce, "
+            "so it needs a full replay and cannot be combined with --since or --until"
+        )
 
     try:
         rules = load_rules(args.rules)
@@ -38,6 +48,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.error(str(exc))
     with EventStore(args.db) as store:
         alerts = ReplayEngine(rules).run(store.iter_events(since=args.since, until=args.until))
+        saved = store.sync_alerts(alerts, [rule.id for rule in rules]) if args.save else None
 
     print(f"{len(alerts)} alert(s) from {len(rules)} rule(s)")
     for a in alerts:
@@ -49,6 +60,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         if a.summary:
             print(f"      {a.summary}")
+    if saved is not None:
+        print(
+            f"saved: {saved.new} new, {saved.updated} updated, {saved.unchanged} unchanged, "
+            f"{saved.reopened} reopened, {saved.removed} removed, {saved.superseded} superseded"
+        )
     if args.labels:
         event_scenarios = None
         if args.log:
