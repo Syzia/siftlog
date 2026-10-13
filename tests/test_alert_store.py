@@ -251,8 +251,8 @@ class MigrationTests(unittest.TestCase):
             with EventStore(path) as store:
                 store.add_events([event(n) for n in range(3)])
             conn = sqlite3.connect(path)  # turn it back into a version 1 database: no alert tables
-            conn.executescript("DROP TABLE alert_history; DROP TABLE alert_events; DROP TABLE alerts; "
-                               "PRAGMA user_version = 1;")
+            conn.executescript("DROP TABLE ingest_checkpoints; DROP TABLE alert_history; "
+                               "DROP TABLE alert_events; DROP TABLE alerts; PRAGMA user_version = 1;")
             conn.close()
 
             with EventStore(path) as store:
@@ -262,6 +262,27 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(store.count_alerts(), 1)
             with EventStore(path) as store:  # and opening it again is a no-op
                 self.assertEqual(store.count_alerts(), 1)
+
+
+    def test_a_stage_5_database_gains_checkpoints_and_keeps_its_alerts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "old.db")
+            with EventStore(path) as store:
+                store.add_events([event(n) for n in range(3)])
+                store.sync_alerts([alert()], ("brute",))
+                store.set_alert_status(alert().id, "ack", note="kept")
+            conn = sqlite3.connect(path)  # back to version 2: alerts, but no checkpoint table
+            conn.executescript("DROP TABLE ingest_checkpoints; PRAGMA user_version = 2;")
+            conn.close()
+
+            with EventStore(path) as store:
+                self.assertEqual(store._conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+                stored = store.get_alert(alert().id)
+                self.assertEqual((stored.status, stored.note), ("ack", "kept"))
+                self.assertIsNone(store.get_checkpoint("file:abc"))
+                store.save_checkpoint("file:abc", "/var/log/auth.log", 120, {"parser": {"year": 2026}})
+                store.save_checkpoint("file:abc", "/var/log/auth.log", 240, {"parser": {"year": 2027}})
+                self.assertEqual(store.get_checkpoint("file:abc"), (240, {"parser": {"year": 2027}}))
 
 
 class RealEngineTests(unittest.TestCase):

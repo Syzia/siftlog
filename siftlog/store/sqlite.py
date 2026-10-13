@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from siftlog.events import AUTH_FAILURE, DeadLetter, Event
@@ -30,7 +30,18 @@ from siftlog.store._common import to_micros as _to_micros
 from siftlog.store.alerts import ALERT_SCHEMA, AlertStoreMixin
 
 # 1: events and dead letters. 2: adds alerts, their evidence and their status history.
-SCHEMA_VERSION = 2
+# 3: adds ingest checkpoints, so a file being followed is resumed where it was left.
+SCHEMA_VERSION = 3
+
+_CHECKPOINT_SCHEMA = """
+CREATE TABLE ingest_checkpoints (
+    source_id   TEXT    PRIMARY KEY,   -- stream identity, see ingest.reader.file_identity
+    path        TEXT    NOT NULL,
+    byte_offset INTEGER NOT NULL,
+    state       TEXT    NOT NULL,      -- JSON: parser and reader state needed to resume exactly
+    updated_at  INTEGER NOT NULL
+);
+"""
 
 # byte_offset / repeat_count rather than offset / count: OFFSET is an SQL keyword
 # and COUNT is an aggregate, both confusing as bare column names.
@@ -158,9 +169,12 @@ class EventStore(AlertStoreMixin):
             if has_events:
                 raise StoreError("database already has an 'events' table but no schema version; refusing to use it")
             script += _SCHEMA
-        # Versions 0 and 1 both lack the alert tables. One transaction, so a failed
+        # Each version adds tables and changes none. One transaction, so a failed
         # upgrade leaves the database exactly as it was.
-        script += ALERT_SCHEMA
+        if version < 2:
+            script += ALERT_SCHEMA
+        if version < 3:
+            script += _CHECKPOINT_SCHEMA
         self._conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;")
 
     def close(self) -> None:
@@ -188,6 +202,23 @@ class EventStore(AlertStoreMixin):
         with self._conn:
             self._conn.executemany(_INSERT_DEAD, rows)
         return self._conn.total_changes - before
+
+    def save_checkpoint(self, source_id: str, path: str, byte_offset: int, state: Dict[str, Any]) -> None:
+        """Remember how far a followed file has been read, and the state needed to carry on."""
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO ingest_checkpoints (source_id, path, byte_offset, state, updated_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET path = excluded.path, "
+                "byte_offset = excluded.byte_offset, state = excluded.state, updated_at = excluded.updated_at",
+                (source_id, path, _check_limit(byte_offset), _json(state), _to_micros(datetime.now(timezone.utc))),
+            )
+
+    def get_checkpoint(self, source_id: str) -> Optional[Tuple[int, Dict[str, Any]]]:
+        """(byte offset, saved state) for a stream, or None if it has never been followed."""
+        row = self._conn.execute(
+            "SELECT byte_offset, state FROM ingest_checkpoints WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        return None if row is None else (row[0], json.loads(row[1]))
 
     def backfill_geo(self, resolver: Any) -> Tuple[int, int]:
         """Locate events that have a source address but no location yet.

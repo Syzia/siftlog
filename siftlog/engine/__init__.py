@@ -12,6 +12,7 @@ from siftlog.engine.rules import (
     parse_rule,
 )
 from siftlog.engine.scoring import RuleScore, ScoreReport, merge, score
+from siftlog.engine.stream import ReorderBuffer, StreamingEngine
 
 __all__ = [
     "EVENT_COUNT",
@@ -20,12 +21,14 @@ __all__ = [
     "TEMPORAL_ORDERED",
     "VALUE_COUNT",
     "Alert",
+    "ReorderBuffer",
     "ReplayEngine",
     "Rule",
     "RuleError",
     "RuleScore",
     "ScoreReport",
     "Step",
+    "StreamingEngine",
     "load_rules",
     "merge",
     "parse_rule",

@@ -2,7 +2,7 @@
 
 A small SIEM for SSH auth logs. It parses logs into one event schema, stores them in SQLite, runs detection rules written in YAML, and serves the resulting alerts, with their evidence and an analyst workflow, over an HTTP API.
 
-> **Status: MVP.** The whole path works on simulated data: parse, store, locate, detect, score against ground truth, and serve. A honeypot is collecting real data for a later stage. There is no dashboard yet.
+> **Status: MVP, with live detection.** The whole path works on simulated data: parse, store, locate, detect, score against ground truth, and serve, either as a one-off replay or continuously as a log file grows. A honeypot is collecting real data for a later stage. There is no dashboard yet.
 
 ```
  log file -> parser -> SQLite event store -> location enrichment -> rule engine -> alert store -> HTTP API
@@ -66,6 +66,14 @@ Then the whole pipeline, one step at a time:
 ```
 
 `--year` is required because classic syslog timestamps carry no year, and guessing would silently corrupt every timestamp.
+
+**Live detection.** Instead of steps 2 to 4, one process can follow a log as it grows. New lines become events, and alerts are stored within a couple of seconds, where the API serves them:
+
+```bash
+.venv/bin/python -m siftlog.watch sim.log --db siftlog.db --rules rules --year 2026 --simulated-geo
+```
+
+It prints each alert as it opens and each time it grows. It survives log rotation, resumes where it stopped after a restart, and continues an attack already in progress as the same alert. Stop it with Ctrl+C.
 
 To reproduce the results tables: `.venv/bin/python -m siftlog.evaluate --published`.
 
@@ -137,14 +145,14 @@ mitre: [T1110.003]
 - Host-level malware, and attacks that never touch SSH authentication.
 - Low-and-slow attacks under the thresholds, and brute forces spread across enough addresses to stay under them. Both are measured in [docs/results.md](docs/results.md).
 - Users behind VPNs, who trip the travel rule. Location data is only as good as GeoIP.
-- Live detection. Rules run as a replay over stored events; streaming is a later stage.
+- During live detection, events that arrive more than a couple of seconds out of order. They are stored, but the rules skip them until the watcher next starts and rebuilds from the store.
 
 **How Siftlog protects itself.** Everything in a log line is attacker-controlled, so:
 
 - **Parsing.** Patterns are anchored at the end of the line, so a username that looks like log syntax cannot spoof the source address. Log content is never evaluated or passed to a shell. Lines are capped at 64 KiB, invalid UTF-8 is tolerated, and lines that do not parse are kept as dead letters instead of dropped.
 - **Storage.** Every query is parameterised, and column names never come from input.
 - **Rules.** Loaded with `yaml.safe_load`, so a rule file cannot construct Python objects.
-- **Engine.** Evidence is capped per alert and idle state is dropped, so one attacker cannot grow memory without bound.
+- **Engine.** Evidence is capped per alert, idle state is dropped, and each rule tracks a capped number of groups, forgetting the least recently active first. One attacker cycling through usernames cannot grow memory without bound.
 - **API.** A bearer token on every route but `/health`, compared in constant time. It listens on this machine only by default and refuses to listen elsewhere with a generated token. Parameters are typed and bounded. Responses are JSON only.
 - **Repository.** No real logs, credentials or attack traffic. Fixtures use documentation address ranges.
 
@@ -160,7 +168,7 @@ mitre: [T1110.003]
 | 3 | Replay-mode engine, `event_count` and `value_count` rules | done |
 | 4 | `temporal_ordered` + `impossible_travel` rules, GeoIP enrichment | done |
 | 5 | Alert store with analyst workflow + HTTP API (**MVP**) | done |
-| 6 | Streaming mode + tail ingestor | not started |
+| 6 | Live detection: streaming engine + log follower | done |
 | 7 | React dashboard (optional) | not started |
 | 8 | Real data + web log parser | not started |
 | 9 | Sigma rule import (stretch) | not started |

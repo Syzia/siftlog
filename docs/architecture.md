@@ -174,6 +174,17 @@ As built (stage 4):
 - **One attack may expect several alerts.** A brute force that succeeds should trip both `ssh-brute-force` and `ssh-success-after-failures`, so labels carry a list of expected (rule, group key) pairs and recall is counted per expected alert.
 - **A documented false positive.** The simulator now contains a real user on a VPN, which the travel rule flags. It is the mirror image of the low-and-slow documented miss: a known wrong answer kept visible in the results instead of a flattering zero.
 
+As built (stage 6, live detection):
+- **One evaluator, two drivers.** Streaming (`siftlog/engine/stream.py`) feeds the same evaluators as replay, a few events at a time. A test checks that feeding a simulation in any chunking ends in exactly the alerts a replay produces.
+- **Alerts are reported while open.** Replay reports an alert when its episode ends. Streaming reads open alerts as they stand after each batch. The id is fixed when the episode opens, so each newer version updates the same stored alert.
+- **Allowed lateness is two seconds by default.** Each event is held that long after it arrives, then released in timestamp order. An event later than that is still stored, but skipped by detection and counted. It is picked up the next time state is rebuilt.
+- **Starting up rebuilds from the whole store**, then reconciles the alert table as a full replay would. A restart mid-attack therefore continues the same alert, with the same id and any analyst decision intact, and repairs whatever was missed while the process was down. The cost is one pass over every stored event at startup, which is fine at SQLite scale and is the first thing to change beyond it.
+- **State is capped.** Each rule tracks at most 200,000 groups and forgets the least recently active first; an evicted group's open alert is closed, not lost. The cap is a trade-off (an attacker pushed out mid-count is forgotten), and the engine counts evictions so it is visible.
+- **The log follower** (`siftlog/ingest/tail.py`) behaves like `tail -F`: it waits for a half-written line, reads a renamed file to its end before moving to the new one, and treats truncation or an in-place rewrite as a new stream. Its offsets and stream identities match the batch reader's, so a line gets the same event id either way.
+- **Checkpoints** (schema version 3) record how far each stream has been read, plus the parser's year, so a restart neither re-reads nor forgets that the log has passed New Year. A file rotated in continues the year the old one had reached.
+- **A stop signal is handled like Ctrl+C**, so events still in the ordering buffer are evaluated before the process exits.
+- **Known limits.** Ties between two different files within the same second can be ordered differently from a replay. A new stream whose first line is identical to an old one's is treated as that stream.
+
 ### 7. Alert Store
 ```
 alerts(id, rule_id, severity, group_key, first_seen, last_seen,
